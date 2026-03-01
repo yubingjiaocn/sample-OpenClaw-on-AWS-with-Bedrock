@@ -80,6 +80,16 @@ Conditions:
   AllowSSH: !And
     - !Not [!Equals [!Ref AllowedSSHCIDR, ""]]
     - !Not [!Equals [!Ref KeyPairName, "none"]]
+  IsUsEast1: !Equals [ !Ref "AWS::Region", "us-east-1" ]
+  IsUsWest2: !Equals [ !Ref "AWS::Region", "us-west-2" ]
+  IsEuWest1: !Equals [ !Ref "AWS::Region", "eu-west-1" ]
+  IsApNortheast1: !Equals [ !Ref "AWS::Region", "ap-northeast-1" ]
+  IsMantleSupportedRegion: !Or
+    - Condition: IsUsEast1
+    - Condition: IsUsWest2
+    - Condition: IsEuWest1
+    - Condition: IsApNortheast1
+  CreateMantleEndpoint: !And [ Condition: CreateEndpoints, Condition: IsMantleSupportedRegion ]     
 
 Mappings:
   # Architecture detection based on instance type
@@ -205,7 +215,7 @@ Resources:
   # Bedrock Mantle VPC Endpoint (OpenAI-compatible API for Project Mantle models like Kimi K2.5)
   BedrockMantleVPCEndpoint:
     Type: AWS::EC2::VPCEndpoint
-    Condition: CreateEndpoints
+    Condition: CreateMantleEndpoint
     Properties:
       VpcId: !Ref OpenClawVPC
       ServiceName: !Sub 'com.amazonaws.${AWS::Region}.bedrock-mantle'
