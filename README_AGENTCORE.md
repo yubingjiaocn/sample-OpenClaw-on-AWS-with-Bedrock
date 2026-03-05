@@ -304,8 +304,8 @@ EXECUTION_ROLE_ARN=$(aws cloudformation describe-stacks \
   --query 'Stacks[0].Outputs[?OutputKey==`AgentContainerExecutionRoleArn`].OutputValue' \
   --output text)
 
-RUNTIME_ID=$(aws bedrock-agentcore create-agent-runtime \
-  --agent-runtime-name "openclaw-multitenancy-runtime" \
+RUNTIME_ID=$(aws bedrock-agentcore-control create-agent-runtime \
+  --agent-runtime-name "openclaw_multitenancy_runtime" \
   --agent-runtime-artifact '{"containerConfiguration":{"containerUri":"'$ECR_URI':latest"}}' \
   --role-arn "$EXECUTION_ROLE_ARN" \
   --network-configuration '{"networkMode":"PUBLIC"}' \
@@ -407,7 +407,7 @@ The more users, the better the economics. This is the MSP model.
 ## Cleanup
 
 ```bash
-aws bedrock-agentcore delete-agent-runtime --agent-runtime-id $RUNTIME_ID --region us-east-1
+aws bedrock-agentcore-control delete-agent-runtime --agent-runtime-id $RUNTIME_ID --region us-east-1
 aws cloudformation delete-stack --stack-name openclaw-multitenancy --region us-east-1
 ```
 
