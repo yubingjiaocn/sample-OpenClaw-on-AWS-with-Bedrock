@@ -177,7 +177,9 @@ Users (WhatsApp / Telegram / Discord / Slack)
 │  Bedrock H2 Proxy (Node.js, port 8091)               │
 │  ├── 拦截 AWS SDK HTTP/2 Bedrock 请求                │
 │  ├── 提取用户消息 + channel/sender 信息              │
-│  └── 转发到 Tenant Router                            │
+│  ├── 冷启动: fast-path 直接调 Bedrock (~3s 返回)     │
+│  ├── 同时异步触发 microVM 预热 (后台)                │
+│  └── 热路径: 转发到 Tenant Router                    │
 │                                                      │
 │  Tenant Router (Python, port 8090)                   │
 │  ├── derive_tenant_id(channel, user_id) → 33+ 字符   │
@@ -210,7 +212,7 @@ Users (WhatsApp / Telegram / Discord / Slack)
 │                                                      │
 │  AgentCore 自动管理:                                  │
 │  ├── 同一 sessionId → 复用已有 microVM (秒级响应)    │
-│  ├── 新 sessionId → 拉起新 microVM (~30s 冷启动)    │
+│  ├── 新 sessionId → fast-path 直接 Bedrock (~3s) + 后台拉起 microVM    │
 │  └── idle 15min → SIGTERM → S3 flush → 释放          │
 └──────────────────────────────────────────────────────┘
 
@@ -221,25 +223,31 @@ Users (WhatsApp / Telegram / Discord / Slack)
 └── 升级 OpenClaw: rebuild 镜像 push ECR，所有租户下次请求自动用新版本
 ```
 
-### Verified End-to-End Flow (2026-03-16)
+### Verified End-to-End Flow (2026-03-19)
 
-完整链路已验证通过:
+完整链路已验证通过 (含冷启动 fast-path 优化):
 
 ```
-Telegram 消息 → OpenClaw Gateway → AWS SDK Bedrock call (HTTP/2)
-  → AWS_ENDPOINT_URL_BEDROCK_RUNTIME=http://localhost:8091
-  → bedrock_proxy_h2.js (Node.js HTTP/2 proxy, 提取消息 + channel/sender)
-  → Tenant Router (Python, 派生 tenant_id, 调 AgentCore API)
-  → AgentCore invoke_agent_runtime (Firecracker microVM 冷启动 ~30s)
-  → entrypoint.sh (S3 pull workspace) → server.py → openclaw agent CLI
-  → Bedrock Nova 2 Lite → "Hello! How can I help you today?"
-  → 响应原路返回 → Telegram 收到回复
+Cold Start (用户感知 ~3s):
+  用户首条消息 → Gateway → H2 Proxy
+    → tenant status=cold
+    → 并行:
+      1. fast-path: 直接调 Bedrock Converse API → 3.4s 返回给用户 ✅
+      2. async: Tenant Router → AgentCore → microVM 预热 (后台 ~32s)
+    → tenant status=warm
+
+Warm Path (~5s):
+  用户后续消息 → Gateway → H2 Proxy
+    → tenant status=warm
+    → Tenant Router → AgentCore → microVM → OpenClaw CLI → Bedrock
+    → 5.2s 返回 (完整 OpenClaw，含 SOUL.md/memory/skills) ✅
 ```
 
 | 指标 | 数值 |
 |------|------|
-| 冷启动延迟 | ~30s (首次请求，含 microVM 拉起 + OpenClaw 初始化) |
-| 热请求延迟 | ~10s (microVM 已运行，openclaw agent CLI 执行) |
+| 冷启动延迟 (用户感知) | ~3s (fast-path 直接 Bedrock，无 SOUL.md/memory) |
+| 冷启动延迟 (真实 microVM) | ~25s (后台预热，用户无感知) |
+| 热请求延迟 | ~5-10s (microVM 已运行，openclaw agent CLI 执行) |
 | microVM idle 超时 | 15 分钟 (可配置) |
 | 最大生命周期 | 8 小时 (可配置) |
 
@@ -263,6 +271,7 @@ Telegram 消息 → OpenClaw Gateway → AWS SDK Bedrock call (HTTP/2)
 |---|---|---|
 | Users | 1 | Unlimited, isolated |
 | Execution | Local process | Serverless microVM per tenant |
+| Cold start | N/A | ~3s user-perceived (fast-path), ~25s real microVM |
 | Model access | Individual API keys | Unified Bedrock, per-tenant metering |
 | Permissions | None | Per-tenant SSM profiles, Plan A + E |
 | Audit | None | CloudWatch + CloudTrail per tenant |
@@ -286,7 +295,7 @@ agent-container/           # Docker image for AgentCore Runtime
 ├── memory.py              # Optional AgentCore Memory persistence
 ├── observability.py       # Structured CloudWatch JSON logs
 ├── openclaw.json          # OpenClaw config template (Bedrock provider, no gateway)
-├── Dockerfile             # ARM64: Python 3.12 + AWS CLI + Node.js 22 + OpenClaw
+├── Dockerfile             # Multi-stage ARM64: Python 3.12 + AWS CLI + Node.js 22 + OpenClaw + V8 cache
 └── build-on-ec2.sh        # Remote build when local Docker unavailable
 
 auth-agent/                # Authorization Agent
@@ -297,7 +306,7 @@ auth-agent/                # Authorization Agent
 
 src/gateway/
 ├── tenant_router.py       # Gateway → AgentCore routing (tenant derivation + invocation)
-├── bedrock_proxy_h2.js    # HTTP/2 proxy: intercepts Bedrock calls, forwards to Tenant Router
+├── bedrock_proxy_h2.js    # HTTP/2 proxy: intercepts Bedrock calls, fast-path for cold start, forwards to Tenant Router
 ├── bedrock_proxy.py       # HTTP/1.1 proxy (for curl testing, not used in production)
 └── start_multitenant.sh   # Service startup helper script
 

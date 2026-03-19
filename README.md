@@ -271,8 +271,9 @@ Telegram/WhatsApp message
 
 | Metric | Value |
 |--------|-------|
-| Cold start (first request) | ~30s |
-| Warm request | ~10s |
+| Cold start (user-perceived) | ~3s (fast-path direct Bedrock) |
+| Cold start (real microVM) | ~22-25s (background, user doesn't wait) |
+| Warm request | ~5-10s |
 | Cost for 50 users | ~$65-110/month (~$1.30-2.20/person) |
 | vs ChatGPT Plus (50 users) | $1,000/month |
 

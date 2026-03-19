@@ -26,8 +26,10 @@ EC2 Gateway (常驻)
   │           │
   │           │ AWS_ENDPOINT_URL_BEDROCK_RUNTIME=http://localhost:8091
   │           ▼
-  ├── Bedrock H2 Proxy (Node.js, port 8091) — 拦截 HTTP/2 请求
-  │     └── 提取用户消息 + channel/sender → 转发到 Tenant Router
+  └── Bedrock H2 Proxy (Node.js, port 8091) — 拦截 HTTP/2 请求
+        ├── 冷启动: fast-path 直接调 Bedrock (~3s 返回给用户)
+        ├── 同时异步触发 microVM 预热 (后台 ~25s)
+        └── 热路径: 提取用户消息 + channel/sender → 转发到 Tenant Router
   │
   └── Tenant Router (Python, port 8090) — 派生 tenant_id、调 AgentCore
         │
@@ -119,16 +121,22 @@ AgentCore 调用的 HTTP 端点。两个关键路径:
 
 Bedrock provider 配置，使用 `${AWS_REGION}` 和 `${BEDROCK_MODEL_ID}` 环境变量替换。server.py 启动时写入 `~/.openclaw/openclaw.json`。
 
-### agent-container/Dockerfile — 容器镜像
+### agent-container/Dockerfile — 容器镜像 (Multi-stage)
 
 ```
-Python 3.12-slim
+Stage 1 (builder):
+  Python 3.12-slim + curl + unzip + git
   + AWS CLI v2 (架构感知: aarch64/x86_64)
-  + Node.js 22 + git
+  + Node.js 22 (nodesource)
   + OpenClaw (npm install -g openclaw@latest)
   + Python 依赖 (boto3, requests)
-  + entrypoint.sh + server.py + openclaw.json + permissions.py + safety.py
-  + OpenClaw templates symlink
+  + V8 Compile Cache 预热 (openclaw agent --help)
+
+Stage 2 (runtime):
+  Python 3.12-slim + jq (无 git/curl/unzip/build tools)
+  + COPY --from=builder: AWS CLI, Node.js, OpenClaw, Python deps, V8 cache
+  + 应用代码: server.py, entrypoint.sh, openclaw.json, permissions.py, safety.py
+  + 镜像大小: 1.55GB (优化前 2.24GB, 减少 31%)
 ENTRYPOINT: /app/entrypoint.sh
 ```
 
@@ -182,7 +190,7 @@ EC2 上运行的 Python HTTP 服务 (port 8090):
 | S3 租户桶 | 已创建 | openclaw-tenants-263168716248 |
 | AgentCore Runtime | READY | openclaw_multitenancy_runtime-olT3WX54rJ |
 | SOUL.md 模板 | 已上传 | _shared/templates/{default,intern,engineer}.md |
-| Docker 镜像 | 已 push | 含 AWS CLI + Node.js 22 + OpenClaw + entrypoint.sh |
+| Docker 镜像 | 已 push | Multi-stage, 1.55GB (V8 cache + IPv4 + CLI 重试) |
 | Tenant Router | 运行中 | EC2 port 8090 |
 | OpenClaw Gateway | 运行中 | EC2 port 18789 |
 
@@ -337,13 +345,14 @@ H2 Proxy 维护 tenant 状态表 (cold/warming/warm):
 Fast-path 是裸 Bedrock 调用，无 SOUL.md/memory/skills。零侵入 OpenClaw。
 通过 `FAST_PATH_ENABLED=false` 环境变量可完全关闭。
 
-### 优化后目标
+### 优化后目标 (已验证 2026-03-19)
 
-| 场景 | 优化前 | 优化后 |
-|------|--------|--------|
-| 冷启动 (真实) | ~30s | ~22-25s |
-| 冷启动 (用户感知) | ~30s | ~2-3s |
-| 热请求 | ~10s | ~10s (不变) |
+| 场景 | 优化前 | 优化后 | 实测 |
+|------|--------|--------|------|
+| 冷启动 (用户感知) | ~30s | ~2-3s | 3.4s ✅ |
+| 热请求 | ~10s | ~5-10s | 5.2s ✅ |
+| microVM 预热 (后台) | N/A | ~25s | 32s ✅ |
+| Docker 镜像大小 | 2.24GB | ~1.5GB | 1.55GB ✅ |
 
 ### 竞品对比分析
 
@@ -377,11 +386,11 @@ Fast-path 是裸 Bedrock 调用，无 SOUL.md/memory/skills。零侵入 OpenClaw
 | agent-container/entrypoint.sh | microVM 入口: openclaw.json 写入 + server.py 启动 + S3 sync |
 | agent-container/server.py | HTTP wrapper: health check + Plan A/E + openclaw agent CLI 子进程 |
 | agent-container/openclaw.json | OpenClaw 配置模板 (Bedrock provider, 无 gateway 配置) |
-| agent-container/Dockerfile | 容器镜像: Python 3.12 + AWS CLI + Node.js 22 + OpenClaw |
+| agent-container/Dockerfile | 容器镜像: Multi-stage, Python 3.12 + AWS CLI + Node.js 22 + OpenClaw + V8 cache |
 | agent-container/build-on-ec2.sh | EC2 上远程 build Docker 镜像的脚本 |
 | agent-container/templates/*.md | SOUL.md 角色模板 (default/intern/engineer) |
 | src/gateway/tenant_router.py | Tenant Router: tenant_id 派生 + AgentCore invoke (port 8090) |
-| src/gateway/bedrock_proxy_h2.js | Bedrock H2 Proxy: 拦截 HTTP/2 请求转发到 Tenant Router (port 8091) |
+| src/gateway/bedrock_proxy_h2.js | Bedrock H2 Proxy: 拦截 HTTP/2 请求, fast-path 冷启动优化, 转发到 Tenant Router (port 8091) |
 | src/gateway/bedrock_proxy.py | Bedrock HTTP/1.1 Proxy (curl 测试用，生产用 H2 版本) |
 | clawdbot-bedrock-agentcore-multitenancy.yaml | CloudFormation: EC2 + ECR + S3 + SSM + IAM |
 | deploy-multitenancy.sh | 一键部署脚本 |

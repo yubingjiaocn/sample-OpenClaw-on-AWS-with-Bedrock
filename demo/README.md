@@ -86,7 +86,7 @@ SSM port forward ──────────────────→ OpenC
 |--------|-------|
 | Cost per user (50 users) | ~$1.30-2.20/month vs $20/month ChatGPT Plus |
 | Tenant isolation | Firecracker microVM (hardware-level) |
-| Cold start latency | ~30s (first request per tenant) |
+| Cold start latency | ~3s user-perceived (fast-path), ~25s real microVM (background) |
 | Warm request latency | ~10s (microVM already running) |
 | OpenClaw code changes | Zero (all management via external layers) |
 | IM channel setup | Same as standard OpenClaw deployment |
