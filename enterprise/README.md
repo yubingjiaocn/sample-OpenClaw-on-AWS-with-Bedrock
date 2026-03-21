@@ -2,6 +2,16 @@
 
 Turn [OpenClaw](https://github.com/openclaw/openclaw) from a personal AI assistant into an enterprise-grade digital workforce platform — without modifying a single line of OpenClaw source code.
 
+## 🦞 Live Demo
+
+> **https://openclaw.awspsa.com**
+>
+> A real running instance with 7 departments, 13 sub-departments, 10 positions, 20 employees, 20 AI agents (18 personal + 2 shared), 26 role-filtered skills, and 12 knowledge documents — all backed by DynamoDB + S3 on AWS.
+>
+> This is not a mockup. Every button works, every chart reads from real data, every agent runs on Bedrock AgentCore in isolated Firecracker microVMs.
+>
+> Need a demo account? Contact [wjiad@aws](mailto:wjiad@amazon.com) to get access.
+
 ## The Problem
 
 OpenClaw is one of the most capable open-source AI agent platforms (200k+ GitHub stars). It excels at personal productivity: connecting AI to WhatsApp, Telegram, Discord, running browser automation, managing calendars. But enterprise deployments need:
