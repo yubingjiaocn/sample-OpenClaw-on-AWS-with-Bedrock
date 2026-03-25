@@ -176,15 +176,21 @@ def _ensure_workspace_assembled(tenant_id: str) -> None:
                 logger.warning("SSM user-mapping lookup failed: %s", e)
 
         # 1. Sync tenant's personal workspace from S3 using BASE ID
+        # IMPORTANT: Use 'cp --recursive' instead of 'sync' to force S3 → local overwrite.
+        # The entrypoint.sh initial sync uses tenant=unknown, creating empty workspace files.
+        # 'aws s3 sync' won't overwrite these because the local files are newer.
+        # 'aws s3 cp --recursive' always downloads from S3, ensuring seed data (MEMORY.md,
+        # USER.md, memory/*.md) is correctly loaded.
         s3_base = f"s3://{S3_BUCKET}/{base_id}"
         try:
             subprocess.run(
-                ["aws", "s3", "sync", f"{s3_base}/workspace/", f"{WORKSPACE}/", "--quiet"],
+                ["aws", "s3", "cp", f"{s3_base}/workspace/", f"{WORKSPACE}/",
+                 "--recursive", "--quiet"],
                 capture_output=True, text=True, timeout=30
             )
-            logger.info("S3 workspace synced for tenant %s (base: %s)", tenant_id, base_id)
+            logger.info("S3 workspace copied for tenant %s (base: %s)", tenant_id, base_id)
         except Exception as e:
-            logger.warning("S3 sync failed for %s: %s", tenant_id, e)
+            logger.warning("S3 cp failed for %s: %s", tenant_id, e)
 
         # 2. Run workspace_assembler.py to merge three-layer SOUL
         assembler = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace_assembler.py")
