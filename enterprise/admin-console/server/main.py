@@ -1215,8 +1215,11 @@ def _admin_assistant_direct(message: str) -> dict:
     env_path = "/home/ubuntu/.nvm/versions/node/v22.22.1/bin:/usr/local/bin:/usr/bin:/bin"
 
     try:
+        # Use timestamp-based session to force SOUL re-read on each "clear chat"
+        import time as _admin_t
+        session_id = f"admin-{int(_admin_t.time()) // 3600}"  # New session every hour
         cmd = ["sudo", "-u", "ubuntu", "env", f"PATH={env_path}", "HOME=/home/ubuntu",
-               openclaw_bin, "agent", "--session-id", "admin-assistant",
+               openclaw_bin, "agent", "--session-id", session_id,
                "--message", message, "--json", "--timeout", "120"]
         result = _sp.run(cmd, capture_output=True, text=True, timeout=130)
 
