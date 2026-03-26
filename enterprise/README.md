@@ -267,7 +267,7 @@ For employees who don't use IM tools, the Web Portal provides the same experienc
 | **SOUL Injection** | 3-layer merge (Global + Position + Personal) → OpenClaw reads merged SOUL.md at session start |
 | **Permission Control** | SOUL.md defines allowed/blocked tools per role. Plan A (pre-execution) + Plan E (post-audit) |
 | **Skill Filtering** | 26 skills with `allowedRoles`/`blockedRoles` in manifest. Finance gets excel-gen, SDE gets github-pr |
-| **Memory Persistence** | OpenClaw Gateway (running inside microVM) manages session memory natively. Watchdog syncs workspace to S3 every 60s. Next session loads MEMORY.md from S3 — full cross-session memory. |
+| **Memory Persistence** | Three-layer guarantee: (1) per-turn checkpoint writes to `memory/{date}.md` after every response — survives even 1-message sessions; (2) SIGTERM handler waits for Gateway graceful shutdown before final S3 flush; (3) Gateway compaction (mode: default) summarizes long sessions into MEMORY.md. Next cold start loads all files from S3. Same memory shared across Discord, Telegram, Slack, and Portal. |
 | **Real-time Usage** | Every invocation writes tokens/cost to DynamoDB. Admin Console shows per-agent breakdown |
 | **Manager Scoping** | API-level filtering — managers see only their department's data (BFS sub-department rollup) |
 | **Employee Portal** | Browser-based chat with bound agent. No IM tool dependency |
@@ -600,12 +600,37 @@ By Model tab shows **real model distribution** from DynamoDB usage records
 Login as Peter Wu or JiaDe Wang (or use Discord) → Chat → come back later →
 Agent recalls previous conversations from S3-persisted MEMORY.md.
 
-**How it works:**
-- OpenClaw Gateway runs inside each AgentCore microVM (zero invasion to OpenClaw)
-- Gateway manages session memory natively — writes to `workspace/MEMORY.md`
-- Watchdog syncs workspace to S3 every 60s
-- Next session: new microVM loads MEMORY.md from S3 → agent has full context
-- Same memory shared across Discord, Telegram, Slack, and Portal Chat (same employee = same S3 path)
+**Three-layer memory guarantee (designed for serverless short sessions):**
+
+```
+Layer 1 — Per-turn checkpoint (server.py)
+  After every agent response, appends a brief entry to workspace/memory/{date}.md
+  on the local microVM filesystem. Watchdog syncs to S3 within 60 seconds.
+  Works even for 1-message sessions — no dependency on Gateway compaction.
+
+Layer 2 — SIGTERM flush (entrypoint.sh)
+  When AgentCore idles out the microVM, cleanup() stops the HTTP server first,
+  then sends SIGTERM to OpenClaw Gateway and waits up to 15s for graceful shutdown
+  (Gateway writes session state during exit). Final sync explicitly uploads
+  MEMORY.md and memory/ without --size-only to capture compaction rewrites.
+
+Layer 3 — Gateway compaction (openclaw.json)
+  compaction.mode: "default" with recentTurnsPreserve: 5
+  Summarizes conversation history into MEMORY.md when the context window fills.
+  Triggered for longer sessions (10+ turns). Complements Layer 1 by producing
+  richer narrative summaries alongside the per-turn checkpoint entries.
+```
+
+**Next session cold start:**
+```
+AgentCore spins up new Firecracker microVM
+  → workspace_assembler.py merges 3-layer SOUL
+  → aws s3 cp copies workspace/ from S3 (MEMORY.md + memory/*.md included)
+  → OpenClaw Gateway starts and reads all memory files into context
+  → First message already has full conversation history
+```
+
+Same memory shared across Discord, Telegram, Slack, and Portal Chat — same employee ID maps to the same S3 path regardless of channel.
 
 ### 6. LLM Model Management (Settings)
 Settings → LLM Provider → **Change default model** (writes to DynamoDB)
@@ -681,6 +706,32 @@ enterprise/
 ```
 
 ## Operational Notes
+
+### Updating the Agent Container Docker Image
+
+AgentCore Runtime **pins the image digest at update time** — pushing a new `:latest` tag to ECR does NOT automatically roll out to new microVMs. After every Docker build you must explicitly update the runtime:
+
+```bash
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+ECR_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/openclaw-multitenancy-multitenancy-agent:latest"
+EXECUTION_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${STACK_NAME}-agentcore-execution-role"
+RUNTIME_ID=$(aws ssm get-parameter --name "/openclaw/${STACK_NAME}/runtime-id" \
+  --query Parameter.Value --output text --region $REGION)
+
+# 1. Build and push
+bash agent-container/build-on-ec2.sh   # or build locally
+
+# 2. Update runtime to resolve new :latest digest
+aws bedrock-agentcore-control update-agent-runtime \
+  --agent-runtime-id "$RUNTIME_ID" \
+  --agent-runtime-artifact "{\"containerConfiguration\":{\"containerUri\":\"${ECR_URI}\"}}" \
+  --role-arn "$EXECUTION_ROLE_ARN" \
+  --network-configuration '{"networkMode":"PUBLIC"}' \
+  --region $REGION \
+  --query "[status,agentRuntimeVersion]"
+```
+
+New microVMs cold-starting after this update will use the new image. Running microVMs continue with the old image until their `maxLifetime` (8h) expires or AgentCore recycles them.
 
 ### H2 Proxy and Tenant Router — systemd Services
 
