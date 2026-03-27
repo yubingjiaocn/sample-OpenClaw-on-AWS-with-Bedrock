@@ -304,7 +304,7 @@ export default function Settings() {
                       <p className="text-xs text-text-muted">C-Suite · Senior Leadership</p>
                     </div>
                   </div>
-                  <Badge color="warning" dot>Deploying</Badge>
+                  <Badge color="success" dot>Active</Badge>
                 </div>
                 <div className="space-y-3 text-xs">
                   <div className="flex justify-between rounded-lg bg-dark-bg px-3 py-2">
