@@ -291,11 +291,37 @@ def get_employee_activities(authorization: str = Header(default="")):
 
 @app.get("/api/v1/org/employees/{emp_id}/activity")
 def get_employee_activity(emp_id: str):
-    """Get activity data for a single employee."""
+    """Get activity data for a single employee — derived from real SESSION# records."""
+    # Try real data from SESSION# records first
+    try:
+        sessions = [s for s in db.get_sessions() if s.get("employeeId") == emp_id]
+        if sessions:
+            from datetime import timedelta
+            now = datetime.now(timezone.utc)
+            week_ago = (now - timedelta(days=7)).isoformat()
+            week_sessions = [s for s in sessions if s.get("lastActive", "") >= week_ago]
+            messages_this_week = sum(int(s.get("turns", 0)) for s in week_sessions)
+            last_active = max((s.get("lastActive", "") for s in sessions), default="")
+            channel_status = {}
+            for s in sessions[:5]:
+                ch = s.get("channel", "portal")
+                channel_status[ch] = {"lastActive": s.get("lastActive", ""), "sessions": 1}
+            return {
+                "employeeId": emp_id,
+                "messagesThisWeek": messages_this_week,
+                "lastActive": last_active,
+                "totalSessions": len(sessions),
+                "weekSessions": len(week_sessions),
+                "channelStatus": channel_status,
+                "source": "real",
+            }
+    except Exception:
+        pass
+    # Fallback to stored activity record (seed data)
     activity = db.get_activity(emp_id)
     if not activity:
         return {"employeeId": emp_id, "messagesThisWeek": 0, "channelStatus": {}}
-    return activity
+    return {**activity, "source": "seed"}
 
 
 def _auto_provision_employee(emp: dict) -> dict | None:
@@ -2374,6 +2400,101 @@ def get_sessions(source: str = "auto", authorization: str = Header(default="")):
     return enriched
 
 
+@app.post("/api/v1/monitor/sessions/{session_id}/takeover")
+def takeover_session(session_id: str, authorization: str = Header(default="")):
+    """Admin takes over a session — agent pauses auto-reply.
+
+    Writes SSM: /openclaw/{stack}/sessions/{tenant_id}/takeover = admin_user_id
+    server.py checks this before each invocation and skips openclaw if set.
+    """
+    user = _require_role(authorization, roles=["admin", "manager"])
+    stack = os.environ.get("STACK_NAME", "openclaw-multitenancy")
+    try:
+        ssm = _boto3_main.client("ssm", region_name=_GATEWAY_REGION)
+        ssm.put_parameter(
+            Name=f"/openclaw/{stack}/sessions/{session_id}/takeover",
+            Value=user.employee_id, Type="String", Overwrite=True)
+        db.create_audit_entry({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "eventType": "session_takeover",
+            "actorId": user.employee_id, "actorName": user.name,
+            "targetType": "session", "targetId": session_id,
+            "detail": f"Admin {user.name} took over session {session_id}",
+            "status": "success",
+        })
+    except Exception as e:
+        raise HTTPException(500, f"Takeover failed: {e}")
+    return {"taken_over": True, "sessionId": session_id, "adminId": user.employee_id}
+
+
+@app.delete("/api/v1/monitor/sessions/{session_id}/takeover")
+def return_session(session_id: str, authorization: str = Header(default="")):
+    """Admin returns session to agent — resumes auto-reply."""
+    user = _require_role(authorization, roles=["admin", "manager"])
+    stack = os.environ.get("STACK_NAME", "openclaw-multitenancy")
+    try:
+        ssm = _boto3_main.client("ssm", region_name=_GATEWAY_REGION)
+        ssm.delete_parameter(Name=f"/openclaw/{stack}/sessions/{session_id}/takeover")
+        db.create_audit_entry({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "eventType": "session_returned",
+            "actorId": user.employee_id, "actorName": user.name,
+            "targetType": "session", "targetId": session_id,
+            "detail": f"Admin {user.name} returned session {session_id} to agent",
+            "status": "success",
+        })
+    except Exception as e:
+        raise HTTPException(500, f"Return failed: {e}")
+    return {"returned": True, "sessionId": session_id}
+
+
+@app.post("/api/v1/monitor/sessions/{session_id}/send")
+def admin_send_message(session_id: str, body: dict, authorization: str = Header(default="")):
+    """Admin sends a message while in takeover mode (bypasses agent)."""
+    user = _require_role(authorization, roles=["admin", "manager"])
+    stack = os.environ.get("STACK_NAME", "openclaw-multitenancy")
+    message = body.get("message", "").strip()
+    if not message:
+        raise HTTPException(400, "message required")
+
+    # Verify takeover is active
+    try:
+        ssm = _boto3_main.client("ssm", region_name=_GATEWAY_REGION)
+        ssm.get_parameter(Name=f"/openclaw/{stack}/sessions/{session_id}/takeover")
+    except Exception:
+        raise HTTPException(400, "Session is not in takeover mode")
+
+    # Store admin message in DynamoDB CONV# for session continuity
+    try:
+        import boto3 as _b3s
+        ddb = _b3s.resource("dynamodb", region_name=db.AWS_REGION)
+        table = ddb.Table(db.TABLE_NAME)
+        from decimal import Decimal
+        ts = datetime.now(timezone.utc).isoformat()
+        table.put_item(Item={
+            "PK": "ORG#acme", "SK": f"CONV#{session_id}#admin#{int(time.time())}",
+            "sessionId": session_id, "role": "assistant", "content": message,
+            "ts": ts, "source": "human_admin", "adminId": user.employee_id,
+        })
+    except Exception as e:
+        raise HTTPException(500, f"Message storage failed: {e}")
+
+    return {"sent": True, "message": message, "adminId": user.employee_id, "humanAssisted": True}
+
+
+@app.get("/api/v1/monitor/sessions/{session_id}/takeover")
+def get_takeover_status(session_id: str, authorization: str = Header(default="")):
+    """Check if a session is in takeover mode."""
+    _require_auth(authorization)
+    stack = os.environ.get("STACK_NAME", "openclaw-multitenancy")
+    try:
+        ssm = _boto3_main.client("ssm", region_name=_GATEWAY_REGION)
+        param = ssm.get_parameter(Name=f"/openclaw/{stack}/sessions/{session_id}/takeover")
+        return {"active": True, "adminId": param["Parameter"]["Value"], "sessionId": session_id}
+    except Exception:
+        return {"active": False, "sessionId": session_id}
+
+
 @app.get("/api/v1/monitor/sessions/{session_id}")
 def get_session_detail(session_id: str):
     """Get session detail with conversation from DynamoDB."""
@@ -2821,6 +2942,130 @@ def _measure_bedrock_latency() -> int:
         return 0
 
 
+def _calculate_agent_quality(agent_id: str) -> dict:
+    """Calculate real quality score for an agent from DynamoDB data.
+
+    Quality Score = 0.3×satisfaction + 0.2×tool_success + 0.2×response_time + 0.2×compliance + 0.1×completion
+
+    Data sources:
+    - Satisfaction: FEEDBACK# records (thumbs up rate)
+    - Tool success: AUDIT# records (agent_invocation success rate)
+    - Response time: SESSION# durationMs (P75 < 8s = full score)
+    - Compliance: AUDIT# permission_denied rate (low = good)
+    - Completion: SESSION# turns > 1 rate
+    """
+    try:
+        import boto3 as _b3q
+        from decimal import Decimal
+        ddb = _b3q.resource("dynamodb", region_name=db.AWS_REGION)
+        table = ddb.Table(db.TABLE_NAME)
+
+        # Tool success + compliance from AUDIT# entries (last 7 days)
+        audit_resp = table.query(
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
+            ExpressionAttributeValues={":pk": "ORG#acme", ":sk": "AUDIT#"},
+            ScanIndexForward=False, Limit=200)
+        agent_audits = [a for a in audit_resp.get("Items", [])
+                        if a.get("targetId") == agent_id]
+        invocations = [a for a in agent_audits if a.get("eventType") == "agent_invocation"]
+        permission_denials = [a for a in agent_audits if a.get("eventType") == "permission_denied"]
+        tool_success = 1.0 if not invocations else sum(
+            1 for a in invocations if a.get("status") == "success") / max(1, len(invocations))
+        compliance = 1.0 if not invocations else max(0, 1 - len(permission_denials) / max(1, len(invocations)))
+
+        # Response time from SESSION# records
+        sessions = [s for s in db.get_sessions() if s.get("agentId") == agent_id]
+        durations = [float(s["durationMs"]) for s in sessions if s.get("durationMs")]
+        if durations:
+            p75 = sorted(durations)[int(len(durations) * 0.75)]
+            response_score = min(1.0, max(0, 1.0 - (p75 - 3000) / 12000))  # 3s=1.0, 15s=0.0
+        else:
+            response_score = 0.7  # neutral default
+
+        # Completion rate (sessions with >1 turn)
+        multi_turn = [s for s in sessions if int(s.get("turns", 0)) > 1]
+        completion = len(multi_turn) / max(1, len(sessions)) if sessions else 0.7
+
+        # Satisfaction from FEEDBACK# (explicit thumbs up/down)
+        feedback_resp = table.query(
+            IndexName="GSI1",
+            KeyConditionExpression="GSI1PK = :pk AND begins_with(GSI1SK, :sk)",
+            ExpressionAttributeValues={":pk": "TYPE#feedback", ":sk": f"FEEDBACK#{agent_id}"},
+            Limit=100)
+        feedbacks = feedback_resp.get("Items", [])
+        if feedbacks:
+            positive = sum(1 for f in feedbacks if f.get("rating") == "up")
+            satisfaction = positive / len(feedbacks)
+        else:
+            # Fall back to audit success rate as proxy for satisfaction
+            satisfaction = tool_success * 0.9 + 0.1
+
+        score = round(
+            0.3 * satisfaction + 0.2 * tool_success +
+            0.2 * response_score + 0.2 * compliance + 0.1 * completion, 2)
+
+        return {
+            "score": round(score * 5, 1),  # 0-5 scale
+            "breakdown": {
+                "satisfaction": round(satisfaction * 5, 1),
+                "toolSuccess": round(tool_success * 5, 1),
+                "responseTime": round(response_score * 5, 1),
+                "compliance": round(compliance * 5, 1),
+                "completion": round(completion * 5, 1),
+            },
+            "dataPoints": {
+                "invocations": len(invocations),
+                "sessions": len(sessions),
+                "feedbacks": len(feedbacks),
+            }
+        }
+    except Exception as e:
+        return {"score": None, "error": str(e)}
+
+
+@app.get("/api/v1/agents/{agent_id}/quality")
+def get_agent_quality(agent_id: str, authorization: str = Header(default="")):
+    """Get real quality score for an agent calculated from DynamoDB data."""
+    _require_auth(authorization)
+    return _calculate_agent_quality(agent_id)
+
+
+@app.post("/api/v1/portal/feedback")
+def submit_feedback(body: dict, authorization: str = Header(default="")):
+    """Employee submits thumbs up/down feedback on an agent response."""
+    user = _require_auth(authorization)
+    session_id = body.get("sessionId", "")
+    turn_seq = body.get("turnSeq", 0)
+    rating = body.get("rating", "")  # "up" or "down"
+    agent_id = body.get("agentId", "")
+
+    if rating not in ("up", "down"):
+        raise HTTPException(400, "rating must be 'up' or 'down'")
+
+    try:
+        import boto3 as _b3fb
+        ddb = _b3fb.resource("dynamodb", region_name=db.AWS_REGION)
+        table = ddb.Table(db.TABLE_NAME)
+        from decimal import Decimal
+        fid = f"{session_id}#{turn_seq:04d}"
+        table.put_item(Item={
+            "PK": "ORG#acme",
+            "SK": f"FEEDBACK#{fid}",
+            "GSI1PK": "TYPE#feedback",
+            "GSI1SK": f"FEEDBACK#{agent_id}#{fid}",
+            "sessionId": session_id,
+            "turnSeq": Decimal(str(turn_seq)),
+            "rating": rating,
+            "employeeId": user.employee_id,
+            "agentId": agent_id,
+            "ts": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as e:
+        raise HTTPException(500, f"Failed to save feedback: {e}")
+
+    return {"saved": True, "rating": rating}
+
+
 @app.get("/api/v1/monitor/health")
 def get_monitor_health():
     """Comprehensive agent health metrics for Monitor Center."""
@@ -3135,18 +3380,65 @@ def usage_for_agent(agent_id: str):
 
 @app.get("/api/v1/usage/trend")
 def usage_trend():
-    """7-day cost trend from DynamoDB.
-    chatgptEquivalent: computed from active employee count if not stored per-day."""
+    """7-day cost trend — aggregated from real USAGE#{agent}#{date} records in DynamoDB.
+    Falls back to seed COST_TREND# data if real usage is too sparse."""
+    from datetime import timedelta
     employees = db.get_employees()
-    # ChatGPT Team $25/user/month ≈ $0.83/user/day
-    chatgpt_daily = round(len([e for e in employees if e.get("agentId")]) * 0.83, 2)
+    active_emp_count = len([e for e in employees if e.get("agentId")])
+    chatgpt_daily = round(active_emp_count * 0.83, 2)  # $25/user/month ≈ $0.83/day
+
+    # Aggregate real USAGE records by date (last 7 days)
+    try:
+        import boto3 as _b3tr
+        from decimal import Decimal
+        ddb = _b3tr.resource("dynamodb", region_name=db.AWS_REGION)
+        table = ddb.Table(db.TABLE_NAME)
+        now = datetime.now(timezone.utc)
+        daily_costs: dict = {}
+        daily_requests: dict = {}
+        for i in range(7):
+            date_str = (now - timedelta(days=i)).strftime("%Y-%m-%d")
+            daily_costs[date_str] = 0.0
+            daily_requests[date_str] = 0
+
+        # Scan recent USAGE records
+        resp = table.query(
+            IndexName="GSI1",
+            KeyConditionExpression="GSI1PK = :pk AND begins_with(GSI1SK, :sk)",
+            ExpressionAttributeValues={":pk": "TYPE#usage", ":sk": "USAGE#"},
+            Limit=500)
+        for item in resp.get("Items", []):
+            date = item.get("date", "")
+            if date in daily_costs:
+                daily_costs[date] += float(item.get("cost", 0))
+                daily_requests[date] += int(item.get("requests", 0))
+
+        # Build trend array (most recent first)
+        real_trend = []
+        has_real_data = any(v > 0 for v in daily_costs.values())
+        for i in range(6, -1, -1):
+            date_str = (now - timedelta(days=i)).strftime("%Y-%m-%d")
+            real_trend.append({
+                "date": date_str,
+                "openclawCost": round(daily_costs.get(date_str, 0), 4),
+                "chatgptEquivalent": chatgpt_daily,
+                "totalRequests": daily_requests.get(date_str, 0),
+                "source": "real" if has_real_data else "seed",
+            })
+
+        if has_real_data:
+            return real_trend
+    except Exception:
+        pass
+
+    # Fallback to seed COST_TREND# records
     trend = db.get_cost_trend()
     return [{
         "date": t.get("date"),
         "openclawCost": float(t.get("openclawCost", 0)),
-        # Use stored value if present; otherwise use employee-count-based estimate
         "chatgptEquivalent": float(t["chatgptEquivalent"]) if t.get("chatgptEquivalent") else chatgpt_daily,
         "totalRequests": t.get("totalRequests", 0),
+        "source": "seed",
     } for t in trend]
 
 def _get_budgets() -> dict:
@@ -3360,6 +3652,207 @@ def update_security_config(body: dict):
     config.update(body)
     db.set_config("security", config)
     return config
+
+# =========================================================================
+# Org Sync — Feishu / DingTalk (Task C)
+# =========================================================================
+
+@app.get("/api/v1/settings/org-sync")
+def get_org_sync_config(authorization: str = Header(default="")):
+    """Get org sync configuration (source, interval, last sync time)."""
+    _require_role(authorization, roles=["admin"])
+    cfg = db.get_config("org-sync") or {}
+    return {
+        "source": cfg.get("source", "none"),
+        "enabled": cfg.get("enabled", False),
+        "interval": cfg.get("interval", "4h"),
+        "lastSync": cfg.get("lastSync"),
+        "lastResult": cfg.get("lastResult"),
+        "status": cfg.get("status", "not_configured"),
+    }
+
+
+@app.put("/api/v1/settings/org-sync")
+def update_org_sync_config(body: dict, authorization: str = Header(default="")):
+    """Save org sync configuration."""
+    _require_role(authorization, roles=["admin"])
+    cfg = db.get_config("org-sync") or {}
+    cfg.update({k: v for k, v in body.items()
+                if k in ("source", "enabled", "interval", "apiKey", "appId", "appSecret", "tenantKey")})
+    db.set_config("org-sync", cfg)
+    return {"saved": True}
+
+
+@app.post("/api/v1/settings/org-sync/preview")
+def preview_org_sync(authorization: str = Header(default="")):
+    """Simulate org sync and return a diff preview (what would change)."""
+    _require_role(authorization, roles=["admin"])
+    cfg = db.get_config("org-sync") or {}
+    source = cfg.get("source", "none")
+
+    if source == "none":
+        raise HTTPException(400, "No org sync source configured")
+
+    # Fetch remote org data (Feishu / DingTalk)
+    remote_users = []
+    remote_depts = []
+    try:
+        if source == "feishu":
+            remote_users, remote_depts = _fetch_feishu_org(cfg)
+        elif source == "dingtalk":
+            remote_users, remote_depts = _fetch_dingtalk_org(cfg)
+        else:
+            raise HTTPException(400, f"Unsupported source: {source}")
+    except Exception as e:
+        raise HTTPException(502, f"Failed to fetch from {source}: {e}")
+
+    # Compare with current DynamoDB org
+    current_emps = {e["id"]: e for e in db.get_employees()}
+    current_depts = {d["id"]: d for d in db.get_departments()}
+
+    new_emps, changed_emps, left_emps = [], [], []
+    for ru in remote_users:
+        if ru["id"] not in current_emps:
+            new_emps.append(ru)
+        elif _emp_changed(current_emps[ru["id"]], ru):
+            changed_emps.append({"before": current_emps[ru["id"]], "after": ru})
+    for emp_id in current_emps:
+        if not any(ru["id"] == emp_id for ru in remote_users):
+            left_emps.append(current_emps[emp_id])
+
+    new_depts, changed_depts = [], []
+    for rd in remote_depts:
+        if rd["id"] not in current_depts:
+            new_depts.append(rd)
+        elif current_depts[rd["id"]].get("name") != rd.get("name"):
+            changed_depts.append({"before": current_depts[rd["id"]], "after": rd})
+
+    return {
+        "source": source,
+        "employees": {"new": new_emps, "changed": changed_emps, "left": left_emps},
+        "departments": {"new": new_depts, "changed": changed_depts},
+        "summary": {
+            "newEmployees": len(new_emps),
+            "changedEmployees": len(changed_emps),
+            "leftEmployees": len(left_emps),
+            "deptChanges": len(new_depts) + len(changed_depts),
+        }
+    }
+
+
+@app.post("/api/v1/settings/org-sync/apply")
+def apply_org_sync(body: dict, authorization: str = Header(default="")):
+    """Apply org sync changes from a preview result."""
+    _require_role(authorization, roles=["admin"])
+    preview = body.get("preview", {})
+    applied = {"newEmployees": 0, "archivedEmployees": 0, "updatedEmployees": 0, "newDepts": 0}
+
+    for emp in preview.get("employees", {}).get("new", []):
+        # Auto-provision: create employee + agent + binding
+        _auto_provision_employee(emp)
+        applied["newEmployees"] += 1
+
+    for change in preview.get("employees", {}).get("changed", []):
+        db.update_employee(change["after"]["id"], change["after"])
+        applied["updatedEmployees"] += 1
+
+    for emp in preview.get("employees", {}).get("left", []):
+        db.update_employee(emp["id"], {**emp, "agentStatus": "archived"})
+        applied["archivedEmployees"] += 1
+
+    for dept in preview.get("departments", {}).get("new", []):
+        db.create_department(dept)
+        applied["newDepts"] += 1
+
+    # Update sync state
+    cfg = db.get_config("org-sync") or {}
+    cfg["lastSync"] = datetime.now(timezone.utc).isoformat()
+    cfg["lastResult"] = applied
+    cfg["status"] = "ok"
+    db.set_config("org-sync", cfg)
+
+    return {"applied": applied}
+
+
+def _fetch_feishu_org(cfg: dict):
+    """Fetch users and departments from Feishu API."""
+    import requests as _req
+    app_id = cfg.get("appId", "")
+    app_secret = cfg.get("appSecret", "")
+    if not app_id or not app_secret:
+        raise ValueError("Feishu appId and appSecret required")
+
+    # Get tenant_access_token
+    token_resp = _req.post(
+        "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+        json={"app_id": app_id, "app_secret": app_secret}, timeout=10
+    ).json()
+    token = token_resp.get("tenant_access_token", "")
+    if not token:
+        raise ValueError(f"Failed to get Feishu token: {token_resp.get('msg')}")
+
+    headers = {"Authorization": f"Bearer {token}"}
+    # Fetch departments
+    depts_resp = _req.get(
+        "https://open.feishu.cn/open-apis/contact/v3/departments",
+        headers=headers, params={"page_size": 200}, timeout=10).json()
+    depts = [{"id": f"dept-{d['open_department_id']}", "name": d["name"],
+               "parentId": d.get("parent_open_department_id")}
+             for d in depts_resp.get("data", {}).get("items", [])]
+
+    # Fetch users
+    users_resp = _req.get(
+        "https://open.feishu.cn/open-apis/contact/v3/users",
+        headers=headers, params={"page_size": 200}, timeout=10).json()
+    users = [{"id": f"emp-{u['open_id']}", "name": u["name"],
+               "departmentId": f"dept-{u.get('open_department_ids', [''])[0]}",
+               "positionId": "pos-employee", "role": "employee"}
+             for u in users_resp.get("data", {}).get("items", [])]
+
+    return users, depts
+
+
+def _fetch_dingtalk_org(cfg: dict):
+    """Fetch users and departments from DingTalk API."""
+    import requests as _req
+    app_key = cfg.get("appId", "")
+    app_secret = cfg.get("appSecret", "")
+    if not app_key or not app_secret:
+        raise ValueError("DingTalk appId and appSecret required")
+
+    token_resp = _req.post(
+        "https://oapi.dingtalk.com/gettoken",
+        params={"appkey": app_key, "appsecret": app_secret}, timeout=10).json()
+    token = token_resp.get("access_token", "")
+
+    headers = {"x-acs-dingtalk-access-token": token}
+    depts_resp = _req.post(
+        "https://oapi.dingtalk.com/topapi/v2/department/listsub",
+        headers={"Content-Type": "application/json"},
+        params={"access_token": token},
+        json={"dept_id": 1, "language": "zh_CN"}, timeout=10).json()
+    depts = [{"id": f"dept-{d['dept_id']}", "name": d["name"]}
+             for d in depts_resp.get("result", {}).get("dept_list", [])]
+
+    users_resp = _req.post(
+        "https://oapi.dingtalk.com/topapi/v2/user/list",
+        params={"access_token": token},
+        json={"dept_id": 1, "size": 100}, timeout=10).json()
+    users = [{"id": f"emp-{u['userid']}", "name": u["name"],
+               "departmentId": f"dept-{u.get('dept_id_list', [1])[0]}",
+               "positionId": "pos-employee", "role": "employee"}
+             for u in users_resp.get("result", {}).get("list", [])]
+
+    return users, depts
+
+
+def _emp_changed(current: dict, remote: dict) -> bool:
+    """Check if employee record differs between current and remote."""
+    for field in ("name", "departmentId", "positionId"):
+        if current.get(field) != remote.get(field):
+            return True
+    return False
+
 
 # =========================================================================
 # Admin — IM Channels Management

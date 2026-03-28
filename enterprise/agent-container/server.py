@@ -920,6 +920,28 @@ class AgentCoreHandler(BaseHTTPRequestHandler):
     def _handle_invocation(self, tenant_id: str, message: str, payload: dict):
         # Check if global config (SOUL/KB) changed — evicts stale assembly cache
         _check_and_refresh_config_version()
+
+        # Check session takeover — if admin has taken over, skip agent invocation
+        stack = os.environ.get("STACK_NAME", "openclaw-multitenancy")
+        region = os.environ.get("AWS_REGION", "us-east-1")
+        session_key = tenant_id[:40]
+        try:
+            import boto3 as _b3tk
+            ssm_tk = _b3tk.client("ssm", region_name=region)
+            admin_param = ssm_tk.get_parameter(
+                Name=f"/openclaw/{stack}/sessions/{session_key}/takeover")
+            admin_id = admin_param["Parameter"]["Value"]
+            logger.info("Session %s is in takeover by %s — skipping agent", session_key, admin_id)
+            self._respond(200, {
+                "response": "",
+                "status": "takeover",
+                "takenOverBy": admin_id,
+                "message": "Session is being managed by a human admin.",
+            })
+            return
+        except Exception:
+            pass  # Not in takeover, proceed normally
+
         # Ensure workspace is assembled for this tenant (first invocation only)
         _ensure_workspace_assembled(tenant_id)
 
