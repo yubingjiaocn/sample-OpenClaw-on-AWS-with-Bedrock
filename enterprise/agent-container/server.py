@@ -446,6 +446,44 @@ def _ensure_workspace_assembled(tenant_id: str) -> None:
         except IOError:
             pass
 
+        # Synthesize MEMORY.md from daily memory files if it's empty.
+        # In serverless AgentCore microVMs, the OpenClaw Gateway compaction daemon
+        # never runs persistently, so MEMORY.md stays at "# Memory" (9 bytes) forever.
+        # We fix this by concatenating recent daily memory files into MEMORY.md at
+        # session start so the agent has cross-session context.
+        try:
+            memory_md_path = os.path.join(WORKSPACE, "MEMORY.md")
+            memory_dir = os.path.join(WORKSPACE, "memory")
+            current_content = ""
+            if os.path.isfile(memory_md_path):
+                with open(memory_md_path) as f:
+                    current_content = f.read().strip()
+
+            # Synthesize only if MEMORY.md is empty / just a header
+            if len(current_content) < 50 and os.path.isdir(memory_dir):
+                daily_files = sorted(
+                    [f for f in os.listdir(memory_dir) if f.endswith(".md")],
+                    reverse=True)[:3]  # last 3 days
+                if daily_files:
+                    parts = ["# Memory\n\n*Auto-synthesized from recent conversations*\n"]
+                    for fname in daily_files:
+                        fpath = os.path.join(memory_dir, fname)
+                        try:
+                            with open(fpath) as f:
+                                content = f.read().strip()
+                            if content:
+                                date_str = fname.replace(".md", "")
+                                parts.append(f"\n## {date_str}\n{content[:3000]}")
+                        except Exception:
+                            pass
+                    if len(parts) > 1:
+                        with open(memory_md_path, "w") as f:
+                            f.write("\n".join(parts))
+                        logger.info("MEMORY.md synthesized from %d daily files for %s",
+                                    len(daily_files), base_id)
+        except Exception as e:
+            logger.warning("MEMORY.md synthesis failed (non-fatal): %s", e)
+
         # 5. Dynamic agent config: read from DynamoDB and update openclaw.json
         # Hierarchy: employee override > position override > global default
         # Covers: model, memory compaction, context window, language preference
