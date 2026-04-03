@@ -250,7 +250,39 @@ GLOBAL_SOUL="$SCRIPT_DIR/agent-container/templates/default.md"
 
 success "Templates uploaded to s3://${S3_BUCKET}/"
 
-# ── Step 6: Seed DynamoDB ─────────────────────────────────────────────────────
+# ── Step 6: DynamoDB table + Seed ─────────────────────────────────────────────
+# Create table if it doesn't exist (idempotent — no-op if already created)
+TABLE_STATUS=$(aws dynamodb describe-table --table-name "$DYNAMODB_TABLE" \
+  --region "$DYNAMODB_REGION" --query 'Table.TableStatus' --output text 2>/dev/null || echo "NOT_FOUND")
+if [ "$TABLE_STATUS" = "NOT_FOUND" ]; then
+  info "[6/7] Creating DynamoDB table $DYNAMODB_TABLE in $DYNAMODB_REGION..."
+  aws dynamodb create-table \
+    --table-name "$DYNAMODB_TABLE" \
+    --attribute-definitions \
+      AttributeName=PK,AttributeType=S \
+      AttributeName=SK,AttributeType=S \
+      AttributeName=GSI1PK,AttributeType=S \
+      AttributeName=GSI1SK,AttributeType=S \
+    --key-schema \
+      AttributeName=PK,KeyType=HASH \
+      AttributeName=SK,KeyType=RANGE \
+    --global-secondary-indexes '[{
+      "IndexName":"GSI1",
+      "KeySchema":[
+        {"AttributeName":"GSI1PK","KeyType":"HASH"},
+        {"AttributeName":"GSI1SK","KeyType":"RANGE"}
+      ],
+      "Projection":{"ProjectionType":"ALL"}
+    }]' \
+    --billing-mode PAY_PER_REQUEST \
+    --region "$DYNAMODB_REGION" &>/dev/null
+  info "  Waiting for table to become active..."
+  aws dynamodb wait table-exists --table-name "$DYNAMODB_TABLE" --region "$DYNAMODB_REGION"
+  success "DynamoDB table created: $DYNAMODB_TABLE"
+else
+  success "DynamoDB table exists: $DYNAMODB_TABLE ($TABLE_STATUS)"
+fi
+
 if [ "$SKIP_SEED" = "true" ]; then
   info "[6/7] Skipping DynamoDB seed (--skip-seed)"
 else

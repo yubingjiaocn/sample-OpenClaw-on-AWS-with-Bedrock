@@ -425,19 +425,19 @@ Zero IT friction. Employees self-service in 30 seconds. Admins see all connectio
 
 **Critical — these will silently break deployment if missed:**
 
-1. **The `openclaw` npm package (the core AI agent runtime, installed via `npm install -g openclaw@2026.3.24`) is pinned to version `2026.3.24` in both `agent-container/Dockerfile` and `exec-agent/Dockerfile`** — do not upgrade. This is the last version with stable support for Chinese mainstream IM platforms (Feishu / DingTalk). Newer versions changed the Gateway response delivery mechanism in a way that breaks IM channel integration.
-2. **Build both Docker images** — `agent-container/` (standard) and `exec-agent/` (executive). Step 1.5 covers exec; don't skip it even if the user only needs standard agents initially.
-3. **Export two env vars before seed scripts** — run `export AWS_REGION=$REGION && export S3_BUCKET=$S3_BUCKET` before `seed_skills_final.py` and `seed_workspaces.py` (they read env vars, not CLI args).
-4. **Docker build takes 10–15 min** — `clawhub install` installs skills one by one. This is normal.
-5. **After `update-agent-runtime`**, poll until `status: READY` before testing.
+1. **The `openclaw` npm package is pinned to `2026.3.24`** in both `agent-container/Dockerfile` and `exec-agent/Dockerfile` — do not upgrade. Newer versions changed the Gateway response delivery mechanism and break IM channel integration.
+2. **Build both Docker images** — `agent-container/` (standard) and `exec-agent/` (executive). Don't skip exec even if only standard agents are needed initially.
+3. **Docker build takes 10–15 min** — `clawhub install` installs skills one by one. This is normal.
+4. **After `update-agent-runtime`**, poll until `status: READY` before testing.
+5. **DynamoDB is in `us-east-2` by default** (AgentCore is `us-east-1`). This is intentional — DynamoDB cross-region access is free and `us-east-2` avoids hitting AgentCore's region during heavy load.
 
-**Verify it works** (after Step 6):
-- Playground → Carol (Finance) → "run git status" → refused ✓
-- Playground → Wang Wu (SDE) → "run git status" → executes ✓
-- Playground → Sharon (Legal) → "有什么新的token要上线吗" → Guardrail blocks ✓
+**Verify it works** (after deployment):
+- Playground → Carol Zhang (Finance) → "run git status" → refused ✓
+- Playground → Ryan Park (SDE) → "run git status" → executes ✓
+- Playground → Rachel Li (Legal) → "what new tokens are going live?" → Guardrail blocks ✓
 - Playground → WJD (Executive) → same question → answers freely ✓
 
-**If AgentCore returns 500:** check CloudWatch group `/aws/bedrock-agentcore/runtimes/<runtime-id>-DEFAULT` for `openclaw returned empty output` — wrong openclaw version.
+**If AgentCore returns 500:** check CloudWatch group `/aws/bedrock-agentcore/runtimes/<runtime-id>-DEFAULT` for `openclaw returned empty output` — wrong openclaw version. Rebuild with `openclaw@2026.3.24`.
 
 ---
 
@@ -454,39 +454,72 @@ Zero IT friction. Employees self-service in 30 seconds. Admins see all connectio
 | SSM Plugin | Latest | [Install guide](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) |
 
 **AWS requirements:**
-- Bedrock model access for Nova models (default) + Anthropic Claude (for Admin Assistant and exec tier)
-- Bedrock AgentCore available in `us-east-1` and `us-west-2`
-- IAM: `cloudformation:*`, `ec2:*`, `iam:*`, `ecr:*`, `s3:*`, `ssm:*`, `bedrock:*`, `dynamodb:*`
+- Bedrock model access: Nova 2 Lite (default) + Anthropic Claude (exec tier + Admin Assistant)
+- Bedrock AgentCore available in: `us-east-1`, `us-west-2`
+- IAM permissions: `cloudformation:*`, `ec2:*`, `iam:*`, `ecr:*`, `s3:*`, `ssm:*`, `bedrock:*`, `dynamodb:*`
 
-### Step 1: Deploy Infrastructure + AgentCore Runtime
+### Step 1: Configure and Deploy
 
 ```bash
-cd enterprise   # from repo root
-bash deploy-multitenancy.sh openclaw-multitenancy us-east-1
-# Takes ~15 minutes
+cd enterprise           # from repo root
+cp .env.example .env    # copy config template
 ```
 
-Creates: EC2 (gateway) · ECR (agent image) · S3 (workspaces) · IAM roles · AgentCore Runtime · SSM config
+Open `.env` and fill in the required values:
 
 ```bash
-STACK_NAME="openclaw-multitenancy"
+STACK_NAME=openclaw-enterprise   # your stack name
+REGION=us-east-1                 # us-east-1 or us-west-2 (AgentCore regions)
+ADMIN_PASSWORD=your-password     # admin console login password
+
+# Optional: use existing VPC instead of creating a new one
+# EXISTING_VPC_ID=vpc-0abc123
+# EXISTING_SUBNET_ID=subnet-0abc123
+```
+
+Then run the deploy script — it handles everything:
+
+```bash
+bash deploy.sh
+# ~15 minutes total: CloudFormation → Docker build → AgentCore Runtime → DynamoDB seed
+```
+
+To re-deploy after code changes without rebuilding the Docker image or re-seeding:
+
+```bash
+bash deploy.sh --skip-build   # update infra only
+bash deploy.sh --skip-seed    # update infra + image, skip DynamoDB
+```
+
+**What `deploy.sh` does automatically:**
+1. Deploys CloudFormation (EC2, ECR, S3, IAM — creates or updates)
+2. Builds and pushes ARM64 agent container to ECR
+3. Creates or updates AgentCore Runtime
+4. Creates DynamoDB table if it doesn't exist
+5. Seeds org data (employees, positions, departments, SOUL templates, knowledge docs)
+6. Stores `ADMIN_PASSWORD` and `JWT_SECRET` in SSM SecureString
+7. Configures the EC2 gateway via SSM
+
+After deployment, get the instance ID and S3 bucket:
+
+```bash
+STACK_NAME="openclaw-enterprise"   # match your .env
 REGION="us-east-1"
-DYNAMODB_REGION="us-east-2"
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
 INSTANCE_ID=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION \
   --query 'Stacks[0].Outputs[?OutputKey==`InstanceId`].OutputValue' --output text)
 S3_BUCKET=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION \
   --query 'Stacks[0].Outputs[?OutputKey==`TenantWorkspaceBucketName`].OutputValue' --output text)
+echo "EC2: $INSTANCE_ID  |  S3: $S3_BUCKET"
 ```
 
 ### Step 1.5: Build and Push Exec-Agent Image (Executive Tier)
 
-The Executive Runtime uses a separate Docker image with all skills pre-installed and Claude Sonnet 4.6 as the default model. Build and push it from the repo root:
+The Executive Runtime uses a separate Docker image (`exec-agent/`) with all skills pre-installed and Claude Sonnet 4.6. `deploy.sh` builds the standard image automatically; the exec image must be pushed separately:
 
 ```bash
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-ECR_EXEC="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/openclaw-multitenancy-exec-agent"
+ECR_EXEC="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${STACK_NAME}-exec-agent"
 
 aws ecr get-login-password --region $REGION | \
   docker login --username AWS --password-stdin "${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
@@ -519,52 +552,49 @@ aws bedrock-agentcore-control update-agent-runtime \
 
 > The standard agent image (`openclaw-multitenancy-multitenancy-agent`) is built automatically by `deploy-multitenancy.sh`. You only need this step for the executive tier.
 
-### Step 2: Create DynamoDB Table
+### Step 2: DynamoDB Table
+
+> **`deploy.sh` handles this automatically.** The table is created if it doesn't exist, then seeded with org data in one step.
+
+To create or re-seed manually:
 
 ```bash
+# Create table (idempotent — safe to run if it already exists)
 aws dynamodb create-table \
   --table-name openclaw-enterprise \
   --attribute-definitions \
-    AttributeName=PK,AttributeType=S \
-    AttributeName=SK,AttributeType=S \
-    AttributeName=GSI1PK,AttributeType=S \
-    AttributeName=GSI1SK,AttributeType=S \
-  --key-schema \
-    AttributeName=PK,KeyType=HASH \
-    AttributeName=SK,KeyType=RANGE \
-  --global-secondary-indexes '[{
-    "IndexName":"GSI1",
-    "KeySchema":[
-      {"AttributeName":"GSI1PK","KeyType":"HASH"},
-      {"AttributeName":"GSI1SK","KeyType":"RANGE"}
-    ],
-    "Projection":{"ProjectionType":"ALL"}
-  }]' \
+    AttributeName=PK,AttributeType=S AttributeName=SK,AttributeType=S \
+    AttributeName=GSI1PK,AttributeType=S AttributeName=GSI1SK,AttributeType=S \
+  --key-schema AttributeName=PK,KeyType=HASH AttributeName=SK,KeyType=RANGE \
+  --global-secondary-indexes '[{"IndexName":"GSI1","KeySchema":[
+    {"AttributeName":"GSI1PK","KeyType":"HASH"},{"AttributeName":"GSI1SK","KeyType":"RANGE"}
+  ],"Projection":{"ProjectionType":"ALL"}}]' \
   --billing-mode PAY_PER_REQUEST \
   --region $DYNAMODB_REGION
 ```
 
 ### Step 3: Seed Sample Organization
 
+> **`deploy.sh` handles this automatically.** To re-seed manually (e.g. after org changes):
+
 ```bash
 cd enterprise/admin-console/server
 pip install boto3 requests
 
-python3 seed_dynamodb.py         --region $DYNAMODB_REGION
-python3 seed_roles.py            --region $DYNAMODB_REGION
-python3 seed_settings.py         --region $DYNAMODB_REGION
-python3 seed_audit_approvals.py  --region $DYNAMODB_REGION
-python3 seed_usage.py            --region $DYNAMODB_REGION
-python3 seed_routing_conversations.py --region $DYNAMODB_REGION
-python3 seed_knowledge.py        --region $DYNAMODB_REGION
-python3 seed_ssm_tenants.py --region $REGION --stack $STACK_NAME
+DYNAMODB_REGION=us-east-2
 
-export S3_BUCKET=$S3_BUCKET
-export AWS_REGION=$REGION        # seed_skills_final.py and seed_workspaces.py read this
+python3 seed_dynamodb.py              --region $DYNAMODB_REGION
+python3 seed_roles.py                 --region $DYNAMODB_REGION
+python3 seed_settings.py              --region $DYNAMODB_REGION
+python3 seed_audit_approvals.py       --region $DYNAMODB_REGION
+python3 seed_usage.py                 --region $DYNAMODB_REGION
+python3 seed_routing_conversations.py --region $DYNAMODB_REGION
+python3 seed_ssm_tenants.py           --region $REGION --stack $STACK_NAME
+
+export S3_BUCKET AWS_REGION=$REGION
 python3 seed_skills_final.py
-python3 seed_workspaces.py
-python3 seed_all_workspaces.py   --bucket $S3_BUCKET
-python3 seed_knowledge_docs.py   --bucket $S3_BUCKET
+python3 seed_all_workspaces.py        --bucket $S3_BUCKET --region $REGION
+python3 seed_knowledge_docs.py        --bucket $S3_BUCKET --region $REGION
 ```
 
 ### Step 4: Deploy Admin Console
@@ -654,7 +684,7 @@ aws ssm start-session --target $INSTANCE_ID --region $REGION \
   --parameters '{"portNumber":["8099"],"localPortNumber":["8199"]}'
 ```
 
-Open **http://localhost:8199** → login with `emp-z3` (admin) and the password from Step 4.
+Open **http://localhost:8199** → login with Employee ID `emp-jiade` (admin) and `ADMIN_PASSWORD` from your `.env`.
 
 > **Public access:** Use CloudFront with an Elastic IP on the EC2. Set `PUBLIC_URL` in `/etc/openclaw/env` (e.g. `PUBLIC_URL=https://your-domain.com`) for correct Digital Twin URLs — the admin console reads this file via `EnvironmentFile` in the systemd service.
 
@@ -679,8 +709,8 @@ Employees self-service pair via Portal → Connect IM (QR code). No admin approv
 ## What to Test
 
 ### 1. SOUL Injection (core differentiator)
-Login as Carol (Finance) → Chat → "Who are you?" → **"ACME Corp Finance Analyst"**
-Login as Wang Wu (SDE) → Chat → "Who are you?" → **"ACME Corp Software Engineer"**
+Login as **Carol Zhang** (Finance) → Chat → "Who are you?" → **"ACME Corp Finance Analyst"**
+Login as **Ryan Park** (SDE) → Chat → "Who are you?" → **"ACME Corp Software Engineer"**
 Same LLM. Completely different identities.
 
 ### 2. Digital Twin
@@ -689,13 +719,13 @@ Turn ON → copy the URL → open in incognito → chat with the AI version of t
 Turn OFF → incognito tab gets 404 immediately
 
 ### 3. Org Directory (Knowledge Base)
-Ask any agent: *"认识 Peter 吗？他负责什么？"* or *"I need a code review — who should I contact?"*
+Ask any agent: *"Who should I contact for a code review?"* or *"What does Marcus Bell do?"*
 → Agent reads `kb-org-directory` (seeded into every position) and answers with the right person's name, role, IM channel, and agent capabilities
 → Works out-of-box after running `seed_knowledge_docs.py` — no manual KB assignment needed
 
 ### 4. Permission Boundaries
-Carol: "Run git status" → **Refused** (Finance, no shell)
-Wang Wu: "Run git status" → **Executed** (SDE, has shell)
+Carol Zhang: "Run git status" → **Refused** (Finance, no shell)
+Ryan Park: "Run git status" → **Executed** (SDE, has shell)
 WJD / Ada: Any command → **Executed** (Executive tier, zero restrictions, Sonnet 4.6)
 
 ### 5. Multi-Runtime
@@ -705,7 +735,7 @@ Login as **Ada** or **WJD** → these route to the Executive AgentCore Runtime:
 - IAM: full S3, all Bedrock models, cross-dept DynamoDB
 
 ### 6. Memory Persistence
-Chat as Peter Wu (Discord) → come back after 15 min → **agent recalls previous conversation**
+Chat as **JiaDe Wang** (Discord) → come back after 15 min → **agent recalls previous conversation**
 Same memory shared across Discord, Telegram, and Portal.
 
 > **How it works:** Each turn is synced to S3 immediately after the response (not just on session end). The next microVM downloads the workspace at session start and has full context. If memory doesn't appear, re-run `seed_all_workspaces.py` to reset S3 workspace state.
@@ -754,13 +784,14 @@ To add a new KB: Admin Console → Knowledge Base → upload Markdown → Assign
 |-------------|------|------|---------|---------------------|
 | **emp-ada** | **Ada** | **Executive** | **exec-agent · Sonnet 4.6** | **All tools · Full IAM · Feishu + Telegram 🔓** |
 | **emp-wjd** | **WJD** | **Executive** | **exec-agent · Sonnet 4.6** | **All tools · Full IAM · Feishu + Telegram 🔓** |
-| emp-z3 | Zhang San | Admin | standard | Full Admin Console |
 | emp-jiade | JiaDe Wang | Admin | standard | Discord → SA Agent ✨ |
+| emp-chris | Chris Morgan | Admin | standard | DevOps Agent (shell + infra tools) |
 | emp-peter | Peter Wu | Manager | standard | Portal/Discord → Executive Agent ✨ |
-| emp-lin | Lin Xiaoyu | Manager | standard | Product dept view only |
-| emp-david | David Park | Employee | standard | Portal/Discord → Finance Agent ✨ |
-| emp-w5 | Wang Wu | Employee | standard | Telegram → SDE Agent (shell/code) |
+| emp-alex | Alex Rivera | Manager | standard | Product dept manager view |
+| emp-mike | Mike Johnson | Manager | standard | Sales dept manager · CRM tools |
+| emp-ryan | Ryan Park | Employee | standard | Slack/Discord → SDE Agent (shell/code) |
 | emp-carol | Carol Zhang | Employee | standard | Telegram → Finance Agent |
+| emp-david | David Park | Employee | standard | Slack → Finance Agent ✨ |
 | **emp-admin** | **Demo Admin** | **Employee** | **exec-agent** | **Unrestricted test account · All tools · install_skill** |
 
 > 🔓 = No tool restrictions · ✨ = Cross-session memory via S3
