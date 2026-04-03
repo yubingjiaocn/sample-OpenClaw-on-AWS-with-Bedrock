@@ -1815,11 +1815,56 @@ def pair_status(token: str, authorization: str = Header(default="")):
     return {"status": item.get("status", "pending")}
 
 
+class PairPendingRequest(BaseModel):
+    token: str
+    channelUserId: str
+    channel: str
+
+@app.post("/api/v1/bindings/pair-pending")
+def pair_pending(body: PairPendingRequest):
+    """Called by H2 Proxy on /start TOKEN — validates token and returns employee info
+    for the YES/NO confirmation message. Does NOT consume the token.
+    H2 Proxy caches the result and calls pair-complete only after YES."""
+    import time as _t
+    item = db.get_pair_token(body.token)
+    if not item:
+        return {"valid": False, "reason": "not_found"}
+    if item.get("ttl", 0) < int(_t.time()):
+        return {"valid": False, "reason": "expired"}
+    if item.get("status") not in ("pending",):
+        return {"valid": False, "reason": "already_used"}
+
+    emp_id = item["employeeId"]
+
+    # Check: is this IM userId already bound to a DIFFERENT employee?
+    existing = db.get_user_mapping(body.channel, body.channelUserId)
+    if existing and existing.get("employeeId") != emp_id:
+        other_emps = db.get_employees()
+        other_emp = next((e for e in other_emps if e["id"] == existing["employeeId"]), None)
+        return {
+            "valid": False,
+            "reason": "already_bound_other",
+            "boundTo": other_emp.get("name", existing["employeeId"]) if other_emp else existing["employeeId"],
+        }
+
+    emps = db.get_employees()
+    emp = next((e for e in emps if e["id"] == emp_id), {})
+    is_rebind = existing is not None and existing.get("employeeId") == emp_id
+
+    return {
+        "valid": True,
+        "employeeId": emp_id,
+        "employeeName": emp.get("name", emp_id),
+        "positionName": emp.get("positionName", ""),
+        "isRebind": is_rebind,
+    }
+
+
 @app.post("/api/v1/bindings/pair-complete")
 def pair_complete(body: PairCompleteRequest):
-    """Called by H2 Proxy when employee sends /start TOKEN to the bot.
+    """Called by H2 Proxy after employee confirms YES.
     No auth — called from internal network only (H2 Proxy on same EC2).
-    Validates token, writes SSM user mapping, logs audit entry."""
+    Consumes token, writes DynamoDB MAPPING# + SSM, logs audit entry."""
     item = db.consume_pair_token(body.token)
     if not item:
         raise HTTPException(400, "Token invalid, already used, or expired")
@@ -1827,8 +1872,13 @@ def pair_complete(body: PairCompleteRequest):
     emp_id = item["employeeId"]
     channel = item.get("channel", body.channel)
 
-    # Write SSM mapping — must use us-east-1 (where agent container reads from)
-    # pair_complete is the only endpoint called by H2 Proxy, so we need explicit region
+    # Write DynamoDB MAPPING# (primary, used by tenant_router and workspace_assembler)
+    try:
+        db.create_user_mapping(channel, body.channelUserId, emp_id)
+    except Exception as e:
+        print(f"[pair-complete] DynamoDB MAPPING# write failed: {e}")
+
+    # Write SSM (dual-write for backward compat during transition)
     import boto3 as _b3_pair
     _ssm_pair = _b3_pair.client("ssm", region_name=_GATEWAY_REGION)
     _prefix = _mapping_prefix()
