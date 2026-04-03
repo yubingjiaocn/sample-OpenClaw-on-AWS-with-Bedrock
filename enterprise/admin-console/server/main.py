@@ -1988,6 +1988,13 @@ def pair_complete(body: PairCompleteRequest):
     emp_id = item["employeeId"]
     channel = item.get("channel", body.channel)
 
+    # Safety check: reject if this IM userId is already bound to a DIFFERENT employee.
+    # pair-pending already checks this, but pair-complete is the final gate in case the
+    # H2 Proxy bypasses pair-pending (e.g. old proxy code, retry, race condition).
+    existing = db.get_user_mapping(channel, body.channelUserId)
+    if existing and existing.get("employeeId") and existing["employeeId"] != emp_id:
+        raise HTTPException(409, f"This {channel} account is already bound to another employee. Disconnect it first.")
+
     # Write DynamoDB MAPPING# (primary, used by tenant_router and workspace_assembler)
     try:
         db.create_user_mapping(channel, body.channelUserId, emp_id)
