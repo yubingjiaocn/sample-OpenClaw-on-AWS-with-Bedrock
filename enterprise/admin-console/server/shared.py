@@ -94,29 +94,44 @@ def stop_employee_session(emp_id: str) -> dict:
         return {"error": str(e)}
 
 
-# ── Auth (re-exported from auth module) ─────────────────────────────────
-# These are set by main.py after the auth module is loaded.
-# Routers import from shared to avoid circular deps with main.py.
-_auth_module = None
-
-def _init_auth(auth_mod):
-    global _auth_module
-    _auth_module = auth_mod
+# ── Auth helpers ──────────────────────────────────────────────────────────
+# Direct implementation — no lazy proxy needed.
 
 def require_auth(authorization: str):
     """Validate JWT and return UserContext. Raises HTTPException on failure."""
-    if _auth_module is None:
-        raise RuntimeError("Auth module not initialized")
-    return _auth_module.require_auth(authorization)
+    from fastapi import HTTPException
+    import auth as _authmod
+    user = _authmod.get_user_from_request(authorization)
+    if not user:
+        raise HTTPException(401, "Authentication required")
+    return user
 
 def require_role(authorization: str, roles: list = None):
     """Validate JWT + check role. Raises HTTPException on failure."""
-    if _auth_module is None:
-        raise RuntimeError("Auth module not initialized")
-    return _auth_module.require_role(authorization, roles or ["admin"])
+    from fastapi import HTTPException
+    user = require_auth(authorization)
+    allowed = roles or ["admin"]
+    if user.role not in allowed:
+        raise HTTPException(403, f"Role '{user.role}' not permitted. Required: {allowed}")
+    return user
 
 def get_dept_scope(user) -> Optional[set]:
-    """For managers: return set of department IDs they can see (BFS sub-departments)."""
-    if _auth_module is None:
+    """For managers: return set of department IDs they can see (BFS sub-departments).
+    For admins: None (no filter). For employees: empty set."""
+    if user.role == "admin":
         return None
-    return _auth_module.get_dept_scope(user)
+    if user.role == "employee":
+        return set()
+    # Manager: BFS from their department
+    import db as _db_scope
+    depts = _db_scope.get_departments()
+    dept_id = user.department_id
+    ids = {dept_id}
+    queue = [dept_id]
+    while queue:
+        current = queue.pop(0)
+        for d in depts:
+            if d.get("parentId") == current and d["id"] not in ids:
+                ids.add(d["id"])
+                queue.append(d["id"])
+    return ids
