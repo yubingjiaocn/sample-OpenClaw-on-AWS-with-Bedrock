@@ -194,7 +194,21 @@ Resources:
       AvailabilityZone: !Select [0, !GetAZs '']
       Tags:
         - Key: Name
-          Value: !Sub "${AWS::StackName}-private-subnet"
+          Value: !Sub "${AWS::StackName}-private-subnet-az1"
+
+  # Second private subnet in a different AZ for VPC endpoint availability.
+  # Some services (e.g. bedrock-mantle) are not available in all AZs.
+  # With two subnets, CloudFormation picks the AZ that supports the service.
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Condition: CreateEndpoints
+    Properties:
+      VpcId: !Ref OpenClawVPC
+      CidrBlock: "10.0.3.0/24"
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-private-subnet-az2"
 
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
@@ -242,10 +256,12 @@ Resources:
       PrivateDnsEnabled: true
       SubnetIds:
         - !Ref PrivateSubnet
+        - !Ref PrivateSubnet2
       SecurityGroupIds:
         - !Ref VPCEndpointSecurityGroup
 
   # Bedrock Mantle VPC Endpoint (OpenAI-compatible API for Project Mantle models like Kimi K2.5)
+  # Uses two subnets in different AZs — bedrock-mantle may not be available in all AZs.
   BedrockMantleVPCEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Condition: CreateMantleEndpoint
@@ -256,6 +272,7 @@ Resources:
       PrivateDnsEnabled: true
       SubnetIds:
         - !Ref PrivateSubnet
+        - !Ref PrivateSubnet2
       SecurityGroupIds:
         - !Ref VPCEndpointSecurityGroup
 
@@ -270,6 +287,7 @@ Resources:
       PrivateDnsEnabled: true
       SubnetIds:
         - !Ref PrivateSubnet
+        - !Ref PrivateSubnet2
       SecurityGroupIds:
         - !Ref VPCEndpointSecurityGroup
 
@@ -283,6 +301,7 @@ Resources:
       PrivateDnsEnabled: true
       SubnetIds:
         - !Ref PrivateSubnet
+        - !Ref PrivateSubnet2
       SecurityGroupIds:
         - !Ref VPCEndpointSecurityGroup
 
@@ -296,6 +315,7 @@ Resources:
       PrivateDnsEnabled: true
       SubnetIds:
         - !Ref PrivateSubnet
+        - !Ref PrivateSubnet2
       SecurityGroupIds:
         - !Ref VPCEndpointSecurityGroup
 
@@ -652,14 +672,14 @@ Resources:
                   ARCH=$(uname -m)
                   if [ "$ARCH" = "aarch64" ]; then
                     echo "ARM64 detected, installing with --ignore-scripts..."
-                    npm install -g openclaw@latest --timeout=300000 --ignore-scripts || {
+                    npm install -g openclaw@2026.3.24 --timeout=300000 --ignore-scripts || {
                       npm cache clean --force
-                      npm install -g openclaw@latest --timeout=300000 --ignore-scripts
+                      npm install -g openclaw@2026.3.24 --timeout=300000 --ignore-scripts
                     }
                   else
-                    npm install -g openclaw@latest --timeout=300000 || {
+                    npm install -g openclaw@2026.3.24 --timeout=300000 || {
                       npm cache clean --force
-                      npm install -g openclaw@latest --timeout=300000
+                      npm install -g openclaw@2026.3.24 --timeout=300000
                     }
                   fi
 
@@ -773,6 +793,7 @@ Resources:
                   openclaw plugins enable discord || echo "Discord plugin enable failed"
                   openclaw plugins enable slack || echo "Slack plugin enable failed"
                   npm install -g openclaw-feishu@latest --timeout=60000 2>/dev/null || echo "Feishu plugin install skipped"
+                  npm install -g openclaw-wechat@latest --timeout=60000 2>/dev/null || echo "WeChat plugin install skipped"
                   '
 
                   # Copy SOUL.md
