@@ -8,11 +8,14 @@ import { useUsageSummary, useUsageByDepartment, useUsageByAgent, useUsageBudgets
 const costTrendOpts: ApexOptions = {
   chart: { type: 'area', toolbar: { show: false }, background: 'transparent' },
   colors: ['#22c55e', '#6366f1'],
-  stroke: { curve: 'smooth', width: 2 },
+  stroke: { curve: 'smooth', width: [2, 2] },
   fill: { type: 'gradient', gradient: { opacityFrom: 0.3, opacityTo: 0.05 } },
   grid: { borderColor: '#2e3039', strokeDashArray: 4 },
   xaxis: { labels: { style: { colors: '#64748b', fontSize: '12px' } }, axisBorder: { show: false }, axisTicks: { show: false } },
-  yaxis: { labels: { style: { colors: '#64748b', fontSize: '12px' }, formatter: (v: number) => `$${v.toFixed(2)}` } },
+  yaxis: [
+    { title: { text: 'Cost ($)', style: { color: '#64748b', fontSize: '11px' } }, labels: { style: { colors: '#64748b', fontSize: '12px' }, formatter: (v: number) => `$${v.toFixed(2)}` } },
+    { opposite: true, title: { text: 'Requests', style: { color: '#64748b', fontSize: '11px' } }, labels: { style: { colors: '#64748b', fontSize: '12px' }, formatter: (v: number) => `${Math.round(v)}` } },
+  ],
   tooltip: { theme: 'dark' },
   legend: { position: 'top', horizontalAlign: 'right', labels: { colors: '#94a3b8' } },
   dataLabels: { enabled: false },
@@ -109,27 +112,27 @@ export default function Usage() {
       />
 
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-5 mb-6">
+        <StatCard title="Total Cost" value={`$${s.totalCost.toFixed(2)}`} subtitle={`${s.totalRequests} requests`} icon={<DollarSign size={22} />} color="success" />
         <StatCard title="Input Tokens" value={`${(s.totalInputTokens / 1000).toFixed(0)}k`} subtitle="Today" icon={<TrendingUp size={22} />} color="primary" />
         <StatCard title="Output Tokens" value={`${(s.totalOutputTokens / 1000).toFixed(0)}k`} subtitle="Today" icon={<TrendingDown size={22} />} color="info" />
-        <StatCard title="Cost Today" value={`$${s.totalCost.toFixed(2)}`} subtitle={`${s.totalRequests} requests`} icon={<DollarSign size={22} />} color="success" />
         <StatCard title="Active Tenants" value={s.tenantCount} subtitle="With agents" icon={<Users size={22} />} color="cyan" />
-        <StatCard title="vs ChatGPT" value={`$${s.chatgptEquivalent}/day`} subtitle={`Save $${(s.chatgptEquivalent - s.totalCost).toFixed(2)}/day`} icon={<DollarSign size={22} />} color="warning" />
+        <StatCard title="Avg Cost/Request" value={s.totalRequests > 0 ? `$${(s.totalCost / s.totalRequests).toFixed(4)}` : '—'} subtitle="Per invocation" icon={<Bot size={22} />} color="warning" />
       </div>
 
       {/* Cost trend chart */}
       <Card className="mb-6">
-        <h3 className="text-lg font-semibold text-text-primary mb-1">Cost Trend</h3>
-        <p className="text-sm text-text-secondary mb-4">OpenClaw vs ChatGPT equivalent cost ({timeRange === '1d' ? 'Today' : timeRange === '7d' ? 'Last 7 days' : timeRange === '30d' ? 'Last 30 days' : 'Month to date'})</p>
+        <h3 className="text-lg font-semibold text-text-primary mb-1">Cost & Request Trend</h3>
+        <p className="text-sm text-text-secondary mb-4">Daily Bedrock cost and request volume ({timeRange === '1d' ? 'Today' : timeRange === '7d' ? 'Last 7 days' : timeRange === '30d' ? 'Last 30 days' : 'Month to date'})</p>
         {(() => {
           const filtered = timeRange === '1d' ? trend.slice(-1) : timeRange === '7d' ? trend : trend;
           return (
             <Chart
               options={{...costTrendOpts, xaxis: { ...costTrendOpts.xaxis, categories: filtered.map(t => t.date.slice(5)) }}}
               series={[
-                { name: 'OpenClaw Cost', data: filtered.map(t => t.openclawCost) },
-                { name: 'ChatGPT Equivalent', data: filtered.map(t => t.chatgptEquivalent) },
+                { name: 'Cost ($)', type: 'area', data: filtered.map(t => t.openclawCost) },
+                { name: 'Requests', type: 'column', data: filtered.map(t => t.totalRequests || 0) },
               ]}
-              type="area" height={280}
+              type="line" height={280}
             />
           );
         })()}
