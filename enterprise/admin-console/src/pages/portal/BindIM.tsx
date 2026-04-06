@@ -346,7 +346,7 @@ export default function BindIM() {
         </p>
       </div>
 
-      {/* Mode Banner — different experience for always-on vs serverless */}
+      {/* Mode Banner */}
       <div className={`rounded-xl border px-4 py-3 flex items-start gap-3 ${
         deployMode === 'always-on-ecs'
           ? 'bg-primary/5 border-primary/20'
@@ -357,20 +357,31 @@ export default function BindIM() {
         ) : (
           <Radio size={16} className="text-text-muted mt-0.5 flex-shrink-0" />
         )}
-        <div>
+        <div className="flex-1">
           <p className="text-sm font-medium text-text-primary">
             {deployMode === 'always-on-ecs' ? '⚡ Always-on' : 'Serverless'}
           </p>
           <p className="text-xs text-text-muted mt-0.5">
             {instructions.mode_note || (
               deployMode === 'always-on-ecs'
-                ? 'Your agent runs 24/7. IM messages go directly to your dedicated agent container.'
-                : 'Your agent starts on demand. IM messages are routed through the shared org gateway.'
+                ? 'Your agent runs 24/7. Open the Gateway Console below to manage your IM connections directly.'
+                : 'Your agent starts on demand. Connect via the company bot below.'
             )}
           </p>
+          {deployMode === 'always-on-ecs' && (
+            <button
+              className="mt-3 inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary/90 transition-colors"
+              onClick={() => {
+                window.open('/api/v1/portal/gateway/ui/', '_blank');
+              }}
+            >
+              <Zap size={14} /> Open Gateway Console
+            </button>
+          )}
         </div>
       </div>
 
+      {/* Serverless: show channel pairing cards. Always-on: show status only */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         {CHANNELS.map(ch => {
           const isConnected = connected.includes(ch.id);

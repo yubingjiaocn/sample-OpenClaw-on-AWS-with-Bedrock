@@ -131,6 +131,10 @@ app = FastAPI(title="OpenClaw Admin API", version="0.5.0")
 _ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "https://openclaw.awspsa.com,http://localhost:5173,http://localhost:8099").split(",")
 app.add_middleware(CORSMiddleware, allow_origins=_ALLOWED_ORIGINS, allow_methods=["GET","POST","PUT","DELETE","OPTIONS"], allow_headers=["Content-Type","Authorization"])
 
+# Modular routers — new features go here, not in main.py
+from routers.gateway_proxy import router as _gateway_proxy_router
+app.include_router(_gateway_proxy_router)
+
 
 # =========================================================================
 # Auth — Login + current user helper
