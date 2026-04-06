@@ -106,9 +106,11 @@ def get_agents(authorization: str = Header(default="")):
     user = _get_current_user(authorization)
     agents = db.get_agents()
 
-    # Ensure all agents have a channels field (some DynamoDB records lack it)
+    # Ensure all agents have required array fields (some DynamoDB records lack them)
     for a in agents:
         a.setdefault("channels", [])
+        a.setdefault("skills", [])
+        a.setdefault("soulVersions", {})
 
     # Dynamic status: check CloudWatch for recent activity
     active_emp_ids = _get_active_agent_ids()
@@ -133,6 +135,8 @@ def get_agent(agent_id: str):
     if not agent:
         raise HTTPException(404, "Agent not found")
     agent.setdefault("channels", [])
+    agent.setdefault("skills", [])
+    agent.setdefault("soulVersions", {})
     # Dynamic status
     active_emp_ids = _get_active_agent_ids()
     emp_id = agent.get("employeeId", "")
