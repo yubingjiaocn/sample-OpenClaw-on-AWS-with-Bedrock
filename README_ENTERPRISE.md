@@ -65,21 +65,49 @@ Admin selects deployment mode when creating an agent in **Agent Factory**. The A
 
 ---
 
-## Security: Hardware-Level Isolation at Every Layer
+## Security: Defense in Depth Across All Runtimes
 
-Every agent invocation runs in an isolated Firecracker microVM — the same hypervisor technology powering AWS Lambda. No amount of prompt engineering can break L3 or L4.
+### 5-Layer Security Model
 
 | Layer | Mechanism | Bypassed by prompt injection? |
 |-------|-----------|-------------------------------|
 | L1 — Prompt | SOUL.md rules ("Finance never uses shell") | ⚠️ Theoretically possible |
 | L2 — Application | Skills manifest `allowedRoles`/`blockedRoles` | ⚠️ Code bug risk |
 | **L3 — IAM** | **Runtime role has no permission on target resource** | **Impossible** |
-| **L4 — Compute** | **Firecracker microVM per invocation, isolated at hypervisor level** | **Impossible** |
+| **L4 — Compute** | **Isolation boundary per agent (see table below)** | **Impossible** |
 | **L5 — Guardrail** | **Bedrock Guardrail checks every input + output: topic denial, PII filtering, compliance policies** | **Impossible — AWS-managed, semantic AI layer** |
 
-Each runtime tier has its own Docker image, its own IAM role, its own Firecracker boundary, and an optional Bedrock Guardrail. An intern's agent IAM role literally cannot read the exec S3 bucket — even if the LLM tries. And even if it could, the Guardrail blocks the output before it reaches the user.
+L1-L2 are soft (prompt/application level). L3-L5 are hard infrastructure boundaries — no amount of prompt injection, jailbreaking, or tool-call abuse can bypass them. An intern's agent IAM role literally cannot read the exec S3 bucket — even if the LLM tries. And even if it could, the Guardrail blocks the output before it reaches the user.
 
-Additional controls: no public ports (SSM only) · IAM roles throughout, no hardcoded credentials · gateway token in SSM SecureString, never on disk · VPC isolation between runtimes.
+### L4 Compute Isolation: Runtime Comparison
+
+The three runtimes provide different levels of compute isolation. Choose based on your security posture:
+
+| | AgentCore (Serverless) | ECS (Fargate) | EKS (Pods) | EKS + Kata Containers |
+|---|---|---|---|---|
+| **Isolation** | Firecracker microVM | Fargate microVM | Linux cgroups/namespaces | Firecracker microVM (Kata) |
+| **Boundary** | Hypervisor (KVM) | Hypervisor (KVM) | Kernel (shared) | Hypervisor (KVM) |
+| **Kernel** | Dedicated per invocation | Dedicated per task | **Shared with node** | Dedicated per pod |
+| **Prompt injection → escape?** | **Impossible** — microVM boundary | **Impossible** — Fargate boundary | ⚠️ Kernel exploit theoretically possible (rare) | **Impossible** — microVM boundary |
+| **Cross-tenant visibility** | None — separate microVMs | None — separate tasks | ⚠️ Shared node, requires NetworkPolicy | None — separate microVMs |
+| **Best for** | Maximum isolation, compliance | Persistent agents, moderate security | Dev/test, cost-optimized | Production K8s with compliance |
+
+**Key takeaway:** AgentCore and ECS Fargate provide **hardware-level** isolation per agent via Firecracker microVMs — the same technology powering AWS Lambda. An LLM-driven agent cannot observe, interfere with, or escape to another agent's execution environment, regardless of how sophisticated the prompt injection is.
+
+Standard EKS pods share the host kernel. While Kubernetes namespaces, cgroups, and NetworkPolicy provide strong isolation for most workloads, a theoretical kernel exploit could cross the boundary. For production EKS deployments requiring the same isolation guarantees as AgentCore:
+
+- **Enable Kata Containers** (`enable_kata = true` in Terraform) — runs each pod in its own Firecracker microVM on bare-metal nodes, restoring hypervisor-level isolation
+- **Use dedicated node groups** per security tier — prevent co-scheduling of different trust levels
+- **Enforce NetworkPolicy** — the OpenClaw Operator creates per-instance NetworkPolicy by default
+
+### Additional Controls
+
+- No public ports (SSM only for EC2, ClusterIP for EKS)
+- IAM roles throughout, no hardcoded credentials
+- Gateway token in SSM SecureString, never on disk
+- VPC isolation between runtimes
+- Pod Identity (EKS) or IRSA for least-privilege AWS access
+- RBAC: admin/manager/employee with scope-limited visibility
 
 ---
 

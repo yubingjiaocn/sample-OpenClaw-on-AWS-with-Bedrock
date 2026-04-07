@@ -171,6 +171,36 @@ Agents are deployed to EKS by creating an `OpenClawInstance` CRD. The OpenClaw O
 
 ---
 
+## Security Considerations
+
+### Compute Isolation
+
+Standard EKS pods share the host Linux kernel. While Kubernetes namespaces, cgroups, and NetworkPolicy provide strong isolation for most workloads, they offer a different security boundary than Firecracker microVMs:
+
+| Runtime | Isolation | Kernel | Prompt injection → escape? |
+|---------|-----------|--------|---------------------------|
+| AgentCore | Firecracker microVM | Dedicated | **Impossible** |
+| ECS Fargate | Fargate microVM | Dedicated | **Impossible** |
+| **EKS Pods** | **cgroups/namespaces** | **Shared with node** | **Kernel exploit theoretically possible** |
+| EKS + Kata | Firecracker microVM | Dedicated | **Impossible** |
+
+For production deployments requiring the same isolation guarantees as AgentCore, enable **Kata Containers** (`enable_kata = true` in Terraform). This runs each pod in its own Firecracker microVM on bare-metal nodes.
+
+### Pod Identity vs IRSA
+
+This deployment uses [EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html) (not IRSA). Pod Identity is simpler — no OIDC provider needed, and the same role can be reused across clusters. The IAM role is scoped to:
+
+- **DynamoDB**: Read/write to the enterprise table only
+- **S3**: Read/write to the workspace bucket only
+- **SSM**: Parameters under `/openclaw/{stack}/*` only
+- **EKS**: `ListClusters`, `DescribeCluster` (read-only)
+- **ECR**: Pull images (read-only)
+- **CloudWatch Logs**: Read-only for agent status
+
+No `bedrock:InvokeModel` — agents call Bedrock via their own IRSA role, not the admin console's.
+
+---
+
 ## Seed Data
 
 The deploy script seeds DynamoDB with a sample organization:
