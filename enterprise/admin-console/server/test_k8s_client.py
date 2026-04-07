@@ -142,8 +142,22 @@ class TestCreateOpenClawInstance(unittest.IsolatedAsyncioTestCase):
         body = call_kwargs["body"]
         self.assertEqual(body["metadata"]["name"], "agt-carol")
         self.assertEqual(body["metadata"]["labels"]["openclaw.rocks/employee"], "emp-carol")
+        # Model should be in amazon-bedrock/model-id format (bedrock/ prefix stripped)
         self.assertEqual(body["spec"]["config"]["raw"]["agents"]["defaults"]["model"]["primary"],
-                         "bedrock/claude-sonnet")
+                         "amazon-bedrock/claude-sonnet")
+        # Full openclaw.json config should include Bedrock provider
+        self.assertIn("models", body["spec"]["config"]["raw"])
+        self.assertIn("amazon-bedrock", body["spec"]["config"]["raw"]["models"]["providers"])
+        bedrock_provider = body["spec"]["config"]["raw"]["models"]["providers"]["amazon-bedrock"]
+        self.assertEqual(bedrock_provider["models"][0]["id"], "claude-sonnet")
+        self.assertEqual(bedrock_provider["auth"], "aws-sdk")
+        # Gateway should be enabled
+        self.assertTrue(body["spec"]["gateway"]["enabled"])
+        # Env vars should include shared agent-container vars
+        env_names = [e["name"] for e in body["spec"]["env"]]
+        for required in ["EMPLOYEE_ID", "STACK_NAME", "S3_BUCKET", "DYNAMODB_TABLE",
+                         "AWS_REGION", "BEDROCK_MODEL_ID", "SHARED_AGENT_ID"]:
+            self.assertIn(required, env_names)
 
     async def test_create_with_registry(self):
         self.client._custom_objects.create_namespaced_custom_object = AsyncMock()
@@ -151,19 +165,35 @@ class TestCreateOpenClawInstance(unittest.IsolatedAsyncioTestCase):
         await self.client.create_openclaw_instance(
             namespace="openclaw", agent_name="agt-1", employee_id="emp-1",
             position_id="pos-sde", model="m",
-            registry="834204282212.dkr.ecr.cn-northwest-1.amazonaws.com.cn",
+            registry="834204282212.dkr.ecr.cn-northwest-1.amazonaws.com.cn/agent:v2",
         )
         body = self.client._custom_objects.create_namespaced_custom_object.call_args[1]["body"]
         self.assertEqual(body["spec"]["image"]["repository"],
-                         "834204282212.dkr.ecr.cn-northwest-1.amazonaws.com.cn")
+                         "834204282212.dkr.ecr.cn-northwest-1.amazonaws.com.cn/agent")
+        self.assertEqual(body["spec"]["image"]["tag"], "v2")
 
-    async def test_create_without_registry_omits_image(self):
+    async def test_create_with_registry_no_tag(self):
         self.client._custom_objects.create_namespaced_custom_object = AsyncMock()
 
         await self.client.create_openclaw_instance(
             namespace="openclaw", agent_name="agt-1", employee_id="emp-1",
             position_id="pos-sde", model="m",
+            registry="834204282212.dkr.ecr.cn-northwest-1.amazonaws.com.cn/agent",
         )
+        body = self.client._custom_objects.create_namespaced_custom_object.call_args[1]["body"]
+        self.assertEqual(body["spec"]["image"]["repository"],
+                         "834204282212.dkr.ecr.cn-northwest-1.amazonaws.com.cn/agent")
+        self.assertEqual(body["spec"]["image"]["tag"], "latest")
+
+    async def test_create_without_registry_uses_env(self):
+        """When no registry arg, falls back to AGENT_ECR_IMAGE env var."""
+        self.client._custom_objects.create_namespaced_custom_object = AsyncMock()
+
+        with patch.dict(os.environ, {"AGENT_ECR_IMAGE": ""}):
+            await self.client.create_openclaw_instance(
+                namespace="openclaw", agent_name="agt-1", employee_id="emp-1",
+                position_id="pos-sde", model="m",
+            )
         body = self.client._custom_objects.create_namespaced_custom_object.call_args[1]["body"]
         self.assertNotIn("image", body["spec"])
 
@@ -188,7 +218,7 @@ class TestCreateOpenClawInstance(unittest.IsolatedAsyncioTestCase):
                 position_id="pos-sde", model="m",
             )
 
-    async def test_create_includes_bedrock_role_annotation(self):
+    async def test_create_includes_bedrock_role_annotation_and_irsa(self):
         self.client._custom_objects.create_namespaced_custom_object = AsyncMock()
 
         await self.client.create_openclaw_instance(
@@ -197,9 +227,49 @@ class TestCreateOpenClawInstance(unittest.IsolatedAsyncioTestCase):
             bedrock_role_arn="arn:aws-cn:iam::834204282212:role/bedrock-role",
         )
         body = self.client._custom_objects.create_namespaced_custom_object.call_args[1]["body"]
+        # Should have annotation for reference
         self.assertEqual(
             body["metadata"]["annotations"]["openclaw.rocks/bedrock-role-arn"],
             "arn:aws-cn:iam::834204282212:role/bedrock-role")
+        # Should have IRSA annotation in security.rbac for the operator
+        self.assertEqual(
+            body["spec"]["security"]["rbac"]["serviceAccountAnnotations"]["eks.amazonaws.com/role-arn"],
+            "arn:aws-cn:iam::834204282212:role/bedrock-role")
+
+    async def test_create_with_workspace_files(self):
+        self.client._custom_objects.create_namespaced_custom_object = AsyncMock()
+
+        workspace = {"SOUL.md": "You are helpful.", "USER.md": "Carol, SDE"}
+        await self.client.create_openclaw_instance(
+            namespace="openclaw", agent_name="agt-1", employee_id="emp-1",
+            position_id="pos-sde", model="m",
+            workspace_files=workspace,
+        )
+        body = self.client._custom_objects.create_namespaced_custom_object.call_args[1]["body"]
+        self.assertEqual(body["spec"]["workspace"]["initialFiles"]["SOUL.md"], "You are helpful.")
+        self.assertEqual(body["spec"]["workspace"]["initialFiles"]["USER.md"], "Carol, SDE")
+
+    async def test_create_with_skills(self):
+        self.client._custom_objects.create_namespaced_custom_object = AsyncMock()
+
+        await self.client.create_openclaw_instance(
+            namespace="openclaw", agent_name="agt-1", employee_id="emp-1",
+            position_id="pos-sde", model="m",
+            skills=["jina-reader", "deep-research-pro"],
+        )
+        body = self.client._custom_objects.create_namespaced_custom_object.call_args[1]["body"]
+        self.assertEqual(body["spec"]["skills"], ["jina-reader", "deep-research-pro"])
+
+    async def test_create_without_workspace_omits_workspace(self):
+        self.client._custom_objects.create_namespaced_custom_object = AsyncMock()
+
+        await self.client.create_openclaw_instance(
+            namespace="openclaw", agent_name="agt-1", employee_id="emp-1",
+            position_id="pos-sde", model="m",
+        )
+        body = self.client._custom_objects.create_namespaced_custom_object.call_args[1]["body"]
+        self.assertNotIn("workspace", body["spec"])
+        self.assertNotIn("skills", body["spec"])
 
 
 class TestDeleteOpenClawInstance(_BaseK8sTest):

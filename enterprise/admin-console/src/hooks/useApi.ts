@@ -1068,10 +1068,30 @@ export function useInstallOperator() {
   });
 }
 
+export interface EksDeployParams {
+  agentId: string;
+  model?: string;
+  registry?: string;
+  bedrockRoleArn?: string;
+  skills?: string[];
+  storageClass?: string;
+  storageSize?: string;
+  cpuRequest?: string;
+  cpuLimit?: string;
+  memoryRequest?: string;
+  memoryLimit?: string;
+  runtimeClass?: string;
+  nodeSelector?: Record<string, string>;
+  tolerations?: Array<{ key: string; value?: string; effect?: string; operator?: string }>;
+  chromium?: boolean;
+  backupSchedule?: string;
+  serviceType?: string;
+}
+
 export function useDeployEksAgent() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ agentId, ...body }: { agentId: string; model?: string; registry?: string }) =>
+    mutationFn: ({ agentId, ...body }: EksDeployParams) =>
       api.post<any>(`/admin/eks/${agentId}/deploy`, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['eks-instances'] }),
   });

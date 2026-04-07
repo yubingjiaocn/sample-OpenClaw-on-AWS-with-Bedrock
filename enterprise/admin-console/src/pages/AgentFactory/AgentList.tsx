@@ -116,7 +116,7 @@ export default function AgentList() {
         />
 
         {/* EKS tab — live OpenClawInstance CRDs from K8s */}
-        {activeTab === 'eks' && <EksInstancesTab />}
+        {activeTab === 'eks' && <EksInstancesTab agents={AGENTS} />}
 
         {/* Configuration tab — model & memory settings per position/employee */}
         {activeTab === 'config' && (

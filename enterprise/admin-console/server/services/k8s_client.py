@@ -73,23 +73,156 @@ class K8sClient:
         model: str,
         registry: str = "",
         bedrock_role_arn: str = "",
+        workspace_files: Optional[dict] = None,
+        skills: Optional[list] = None,
+        storage_class: str = "",
+        storage_size: str = "10Gi",
+        cpu_request: str = "500m",
+        cpu_limit: str = "2",
+        memory_request: str = "2Gi",
+        memory_limit: str = "4Gi",
+        runtime_class: str = "",
+        node_selector: Optional[dict] = None,
+        tolerations: Optional[list] = None,
+        chromium: bool = False,
+        backup_schedule: str = "",
+        service_type: str = "",
     ) -> dict:
-        """Create an OpenClawInstance CRD for an enterprise agent."""
+        """Create an OpenClawInstance CRD for an enterprise agent.
+
+        Uses the same agent-container image as ECS Fargate so the entrypoint.sh,
+        server.py, and workspace_assembler.py code paths are shared across runtimes.
+
+        The operator reconciles this CRD into a StatefulSet + Service + PVC + ConfigMap.
+        Config is written to the PVC via init-config container; workspace files are
+        seeded once via init-workspace container (never overwritten on restart).
+
+        Args:
+            workspace_files: Dict of filename->content to seed into workspace.
+            skills: List of ClawHub skill identifiers to install via init container.
+            cpu_request/cpu_limit/memory_request/memory_limit: Compute resources.
+            runtime_class: RuntimeClassName (e.g. "kata-qemu" for Firecracker isolation).
+            node_selector: K8s nodeSelector labels (e.g. {"katacontainers.io/kata-runtime": "true"}).
+            tolerations: K8s tolerations (e.g. [{"key": "kata", "value": "true", "effect": "NoSchedule"}]).
+            chromium: Enable headless Chromium sidecar for browser automation.
+            backup_schedule: Cron schedule for S3 backups (e.g. "0 2 * * *").
+            service_type: K8s Service type (ClusterIP, LoadBalancer, NodePort).
+        """
         await self.initialize()
 
         stack = os.environ.get("STACK_NAME", "openclaw-multitenancy")
         s3_bucket = os.environ.get("S3_BUCKET", "")
         ddb_table = os.environ.get("DYNAMODB_TABLE", "openclaw-enterprise")
         ddb_region = os.environ.get("DYNAMODB_REGION", "us-east-2")
+        aws_region = os.environ.get("AWS_REGION", "us-west-2")
 
+        # Extract Bedrock model ID from the model string.
+        # Admin console passes "bedrock/us.anthropic.claude-sonnet-4-5..." format;
+        # the openclaw.json template expects just the model ID for ${BEDROCK_MODEL_ID}.
+        bedrock_model_id = model
+        if "/" in bedrock_model_id:
+            bedrock_model_id = bedrock_model_id.split("/", 1)[1]
+
+        # Build openclaw.json config — same structure as agent-container/openclaw.json
+        # so it merges cleanly with the template baked into the image.
         raw_config = {
+            "models": {
+                "providers": {
+                    "amazon-bedrock": {
+                        "baseUrl": f"https://bedrock-runtime.{aws_region}.amazonaws.com",
+                        "auth": "aws-sdk",
+                        "api": "bedrock-converse-stream",
+                        "models": [{
+                            "id": bedrock_model_id,
+                            "name": "Bedrock Model",
+                            "reasoning": False,
+                            "input": ["text"],
+                            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                            "contextWindow": 200000,
+                            "maxTokens": 8192,
+                        }],
+                    },
+                },
+            },
             "agents": {
                 "defaults": {
-                    "model": {"primary": model},
+                    "model": {"primary": f"amazon-bedrock/{bedrock_model_id}"},
+                    "workspace": "/home/openclaw/.openclaw/workspace",
+                    "skipBootstrap": True,
+                    "compaction": {"mode": "default", "recentTurnsPreserve": 5},
                 },
+            },
+            "gateway": {
+                "port": 18789,
+                "mode": "local",
+                "bind": "lan",
+                "auth": {"mode": "none"},
+                "controlUi": {"allowedOrigins": ["*"], "allowInsecureAuth": True},
             },
             "tools": {"exec": {"security": "full", "ask": "off"}},
         }
+
+        # Environment variables — same as entrypoint.sh expects so the shared
+        # agent-container code (workspace_assembler, server.py, skill_loader) works.
+        env_vars = [
+            {"name": "EMPLOYEE_ID", "value": employee_id},
+            {"name": "POSITION_ID", "value": position_id},
+            {"name": "STACK_NAME", "value": stack},
+            {"name": "S3_BUCKET", "value": s3_bucket},
+            {"name": "DYNAMODB_TABLE", "value": ddb_table},
+            {"name": "DYNAMODB_REGION", "value": ddb_region},
+            {"name": "AWS_REGION", "value": aws_region},
+            {"name": "BEDROCK_MODEL_ID", "value": bedrock_model_id},
+            {"name": "SESSION_ID", "value": employee_id},
+            {"name": "SHARED_AGENT_ID", "value": agent_name},
+            {"name": "OPENCLAW_SKIP_ONBOARDING", "value": "1"},
+        ]
+
+        # Image: use agent-container ECR image if available, otherwise default
+        # to the standard openclaw image (operator default: ghcr.io/openclaw/openclaw).
+        agent_ecr_image = registry or os.environ.get("AGENT_ECR_IMAGE", "")
+        image_spec = {}
+        if agent_ecr_image:
+            # ECR URI may include tag (e.g. 123456.dkr.ecr.us-west-2.amazonaws.com/repo:tag)
+            if ":" in agent_ecr_image.split("/")[-1]:
+                repo, tag = agent_ecr_image.rsplit(":", 1)
+            else:
+                repo, tag = agent_ecr_image, "latest"
+            image_spec = {
+                "repository": repo,
+                "tag": tag,
+                "pullPolicy": "Always",
+            }
+
+        # IRSA annotation for Bedrock access
+        rbac_spec = {}
+        if bedrock_role_arn:
+            rbac_spec = {
+                "serviceAccountAnnotations": {
+                    "eks.amazonaws.com/role-arn": bedrock_role_arn,
+                },
+            }
+
+        # Workspace files: seed SOUL.md, USER.md etc. via operator init-workspace container.
+        # These are written once on first boot and never overwritten, so agent
+        # modifications survive pod restarts.
+        workspace_spec = None
+        if workspace_files:
+            workspace_spec = {"initialFiles": workspace_files}
+
+        # Availability: runtimeClassName, nodeSelector, tolerations
+        availability_spec = {}
+        if runtime_class:
+            availability_spec["runtimeClassName"] = runtime_class
+        if node_selector:
+            availability_spec["nodeSelector"] = node_selector
+        if tolerations:
+            availability_spec["tolerations"] = tolerations
+
+        # Networking: service type override
+        networking_spec = {}
+        if service_type:
+            networking_spec = {"service": {"type": service_type}}
 
         body = {
             "apiVersion": f"{CRD_GROUP}/{CRD_VERSION}",
@@ -107,28 +240,29 @@ class K8sClient:
                 },
             },
             "spec": {
-                **({"image": {
-                    "repository": registry,
-                    "tag": "latest",
-                    "pullPolicy": "Always",
-                }} if registry else {}),
-                "env": [
-                    {"name": "EMPLOYEE_ID", "value": employee_id},
-                    {"name": "POSITION_ID", "value": position_id},
-                    {"name": "STACK_NAME", "value": stack},
-                    {"name": "S3_BUCKET", "value": s3_bucket},
-                    {"name": "DYNAMODB_TABLE", "value": ddb_table},
-                    {"name": "DYNAMODB_REGION", "value": ddb_region},
-                ],
+                **({"image": image_spec} if image_spec else {}),
+                "env": env_vars,
                 "config": {
                     "mergeMode": "merge",
                     "raw": raw_config,
                 },
-                "storage": {"persistence": {"enabled": True, "size": "50Gi"}},
+                **({"workspace": workspace_spec} if workspace_spec else {}),
+                **({"skills": skills} if skills else {}),
+                **({"security": {"rbac": rbac_spec}} if rbac_spec else {}),
+                "gateway": {"enabled": True},
+                "storage": {"persistence": {
+                    "enabled": True,
+                    "size": storage_size,
+                    **({"storageClass": storage_class} if storage_class else {}),
+                }},
                 "resources": {
-                    "requests": {"cpu": "500m", "memory": "2Gi"},
-                    "limits": {"cpu": "2", "memory": "4Gi"},
+                    "requests": {"cpu": cpu_request, "memory": memory_request},
+                    "limits": {"cpu": cpu_limit, "memory": memory_limit},
                 },
+                "chromium": {"enabled": chromium},
+                **({"availability": availability_spec} if availability_spec else {}),
+                **({"backup": {"schedule": backup_schedule}} if backup_schedule else {}),
+                **({"networking": networking_spec} if networking_spec else {}),
             },
         }
 
@@ -361,27 +495,29 @@ class K8sClient:
             if e.status != 404:
                 raise
 
-        # 3. Check deployment
+        # 3. Check deployment (try both naming conventions: Helm chart uses
+        #    "openclaw-operator", older OLM installs use "openclaw-operator-controller-manager")
         operator_version = ""
         deployment_ready = False
-        try:
-            dep = await self._apps_v1.read_namespaced_deployment(
-                name="openclaw-operator-controller-manager",
-                namespace=OPERATOR_NAMESPACE,
-            )
-            deployment_ready = (
-                dep.status.ready_replicas is not None
-                and dep.status.ready_replicas >= 1
-            )
-            # Extract version from image tag
-            for c in dep.spec.template.spec.containers or []:
-                if "openclaw-operator" in (c.image or ""):
-                    tag = (c.image or "").rsplit(":", 1)[-1]
-                    operator_version = tag.lstrip("v")
-                    break
-        except client.exceptions.ApiException as e:
-            if e.status != 404:
-                raise
+        for dep_name in ["openclaw-operator", "openclaw-operator-controller-manager"]:
+            try:
+                dep = await self._apps_v1.read_namespaced_deployment(
+                    name=dep_name,
+                    namespace=OPERATOR_NAMESPACE,
+                )
+                deployment_ready = (
+                    dep.status.ready_replicas is not None
+                    and dep.status.ready_replicas >= 1
+                )
+                for c in dep.spec.template.spec.containers or []:
+                    if "openclaw-operator" in (c.image or ""):
+                        tag = (c.image or "").rsplit(":", 1)[-1]
+                        operator_version = tag.lstrip("v")
+                        break
+                break  # found a deployment, stop searching
+            except client.exceptions.ApiException as e:
+                if e.status != 404:
+                    raise
 
         installed = crd_exists and deployment_ready
         return {

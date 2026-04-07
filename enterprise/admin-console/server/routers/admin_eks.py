@@ -19,6 +19,7 @@ import boto3
 from fastapi import APIRouter, HTTPException, Header
 
 import db
+import s3ops
 from shared import require_role, ssm_client, STACK_NAME, GATEWAY_REGION
 from services.k8s_client import k8s_client, OPENCLAW_NAMESPACE, OPERATOR_NAMESPACE
 
@@ -306,10 +307,70 @@ async def upgrade_operator(body: dict = {}, authorization: str = Header(default=
 # Agent Lifecycle (EKS)
 # =========================================================================
 
+def _build_workspace_files(pos_id: str, employee_id: str) -> dict:
+    """Fetch SOUL layers from S3 and build workspace files for the CRD.
+
+    Reuses the same s3ops module that the admin console UI uses for SOUL
+    editing, so the three-layer SOUL (global + position + personal) is
+    consistent across all runtimes.
+
+    Returns a dict of filename -> content suitable for spec.workspace.initialFiles.
+    """
+    files = {}
+    try:
+        layers = s3ops.get_soul_layers(pos_id, employee_id)
+
+        # Assemble merged SOUL.md (same order as workspace_assembler.py)
+        soul_parts = []
+        if layers["global"].get("SOUL.md"):
+            soul_parts.append(layers["global"]["SOUL.md"])
+        if layers["position"].get("SOUL.md"):
+            soul_parts.append(layers["position"]["SOUL.md"])
+        if layers["personal"].get("SOUL.md"):
+            soul_parts.append(layers["personal"]["SOUL.md"])
+        if soul_parts:
+            files["SOUL.md"] = "\n\n---\n\n".join(soul_parts)
+
+        # Optional workspace files
+        for key in ["AGENTS.md", "TOOLS.md"]:
+            content = layers["global"].get(key, "")
+            if content:
+                files[key] = content
+        if layers["position"].get("AGENTS.md"):
+            # Append position-level agents to global
+            existing = files.get("AGENTS.md", "")
+            files["AGENTS.md"] = existing + "\n\n" + layers["position"]["AGENTS.md"] if existing else layers["position"]["AGENTS.md"]
+        if layers["personal"].get("USER.md"):
+            files["USER.md"] = layers["personal"]["USER.md"]
+    except Exception as e:
+        print(f"[eks] Failed to fetch SOUL layers for {employee_id}: {e}")
+
+    return files
+
+
 @router.post("/api/v1/admin/eks/{agent_id}/deploy")
 async def deploy_eks_agent(agent_id: str, body: dict = {}, authorization: str = Header(default="")):
     """Deploy an agent to EKS by creating an OpenClawInstance CRD.
-    The OpenClaw Operator watches the CRD and creates the StatefulSet, Service, PVC."""
+
+    Uses the same agent-container image as ECS Fargate, sharing entrypoint.sh,
+    server.py, and workspace_assembler.py. The operator handles StatefulSet,
+    Service, PVC, and ConfigMap creation from the CRD spec.
+
+    Body (all optional):
+      - model: Bedrock model (default: env DEFAULT_MODEL)
+      - registry: ECR image URI (default: env AGENT_ECR_IMAGE)
+      - bedrockRoleArn: IAM role for Bedrock IRSA
+      - skills: list of ClawHub skill identifiers to install
+      - storageClass: K8s StorageClass name (default: cluster default)
+      - storageSize: PVC size (default: "10Gi")
+      - cpuRequest/cpuLimit/memoryRequest/memoryLimit: compute resources
+      - runtimeClass: RuntimeClassName for VM-level isolation (e.g. "kata-qemu")
+      - nodeSelector: dict of K8s node labels for scheduling
+      - tolerations: list of K8s tolerations
+      - chromium: bool, enable headless browser sidecar
+      - backupSchedule: cron expression for S3 backups (e.g. "0 2 * * *")
+      - serviceType: K8s Service type (ClusterIP, LoadBalancer, NodePort)
+    """
     require_role(authorization, roles=["admin"])
 
     # Pre-flight: ensure the OpenClaw operator is installed
@@ -330,8 +391,24 @@ async def deploy_eks_agent(agent_id: str, body: dict = {}, authorization: str = 
     pos_id = agent.get("positionId", "")
     model = body.get("model", os.environ.get(
         "DEFAULT_MODEL", "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0"))
-    registry = body.get("registry", os.environ.get("OPENCLAW_REGISTRY", ""))
+    registry = body.get("registry", os.environ.get("AGENT_ECR_IMAGE", ""))
     bedrock_role_arn = body.get("bedrockRoleArn", os.environ.get("BEDROCK_ROLE_ARN", ""))
+    skills = body.get("skills", [])
+    storage_class = body.get("storageClass", os.environ.get("EKS_STORAGE_CLASS", ""))
+    storage_size = body.get("storageSize", os.environ.get("EKS_STORAGE_SIZE", "10Gi"))
+    cpu_request = body.get("cpuRequest", "500m")
+    cpu_limit = body.get("cpuLimit", "2")
+    memory_request = body.get("memoryRequest", "2Gi")
+    memory_limit = body.get("memoryLimit", "4Gi")
+    runtime_class = body.get("runtimeClass", "")
+    node_selector = body.get("nodeSelector")
+    tolerations = body.get("tolerations")
+    chromium = body.get("chromium", False)
+    backup_schedule = body.get("backupSchedule", "")
+    service_type = body.get("serviceType", "")
+
+    # Fetch SOUL layers from S3 and assemble workspace files
+    workspace_files = _build_workspace_files(pos_id, emp_id)
 
     try:
         await k8s_client.create_openclaw_instance(
@@ -342,6 +419,20 @@ async def deploy_eks_agent(agent_id: str, body: dict = {}, authorization: str = 
             model=model,
             registry=registry,
             bedrock_role_arn=bedrock_role_arn,
+            workspace_files=workspace_files or None,
+            skills=skills or None,
+            storage_class=storage_class,
+            storage_size=storage_size,
+            cpu_request=cpu_request,
+            cpu_limit=cpu_limit,
+            memory_request=memory_request,
+            memory_limit=memory_limit,
+            runtime_class=runtime_class,
+            node_selector=node_selector,
+            tolerations=tolerations,
+            chromium=chromium,
+            backup_schedule=backup_schedule,
+            service_type=service_type,
         )
     except ValueError as e:
         raise HTTPException(409, str(e))
@@ -376,12 +467,14 @@ async def deploy_eks_agent(agent_id: str, body: dict = {}, authorization: str = 
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "eventType": "config_change", "actorId": "admin", "actorName": "Admin",
         "targetType": "agent", "targetId": agent_id,
-        "detail": f"Deployed agent to EKS (namespace={OPENCLAW_NAMESPACE}, model={model})",
+        "detail": f"Deployed agent to EKS (namespace={OPENCLAW_NAMESPACE}, model={model}, "
+                  f"workspace_files={len(workspace_files)}, skills={len(skills)})",
         "status": "success",
     })
 
     return {"deployed": True, "agentId": agent_id, "namespace": OPENCLAW_NAMESPACE,
             "endpoint": _agent_svc_endpoint(agent_id),
+            "workspaceFiles": list(workspace_files.keys()),
             "note": "OpenClawInstance CRD created. Pod starting (~60s)."}
 
 
@@ -454,14 +547,33 @@ async def reload_eks_agent(agent_id: str, body: dict = {}, authorization: str = 
         },
     }
 
-    # Optionally update model
+    # Optionally update model — update both config.raw and BEDROCK_MODEL_ID env var
     if body.get("model"):
+        new_model = body["model"]
+        bedrock_model_id = new_model.split("/", 1)[1] if "/" in new_model else new_model
+        aws_region = os.environ.get("AWS_REGION", "us-west-2")
         patch["spec"] = {
             "config": {
                 "raw": {
+                    "models": {
+                        "providers": {
+                            "amazon-bedrock": {
+                                "baseUrl": f"https://bedrock-runtime.{aws_region}.amazonaws.com",
+                                "models": [{
+                                    "id": bedrock_model_id,
+                                    "name": "Bedrock Model",
+                                    "reasoning": False,
+                                    "input": ["text"],
+                                    "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                                    "contextWindow": 200000,
+                                    "maxTokens": 8192,
+                                }],
+                            },
+                        },
+                    },
                     "agents": {
                         "defaults": {
-                            "model": {"primary": body["model"]},
+                            "model": {"primary": f"amazon-bedrock/{bedrock_model_id}"},
                         },
                     },
                 },

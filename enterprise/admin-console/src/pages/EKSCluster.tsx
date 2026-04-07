@@ -4,16 +4,18 @@
  */
 import { useState } from 'react';
 import {
-  Cloud, Server, RefreshCw, Link2, Unlink, Download,
+  Cloud, Server, RefreshCw, Link2, Unlink, Download, Plus,
   Square, RotateCw, Terminal,
   Loader2, AlertTriangle, Box,
 } from 'lucide-react';
-import { Card, StatCard, Badge, Button, Table, Modal } from '../components/ui';
+import { Card, StatCard, Badge, Button, Table, Modal, Input, Select, Toggle } from '../components/ui';
 import {
   useEksCluster, useDiscoverClusters, useAssociateCluster, useDisassociateCluster,
   useEksInstances, useInstallOperator,
-  useStopEksAgent, useReloadEksAgent, useEksAgentLogs,
+  useDeployEksAgent, useStopEksAgent, useReloadEksAgent, useEksAgentLogs,
 } from '../hooks/useApi';
+import type { EksDeployParams } from '../hooks/useApi';
+import type { Agent } from '../types';
 
 // ─── Cluster & Operator (for Settings page) ─────────────────────────────────
 
@@ -206,16 +208,19 @@ export function EksClusterTab() {
 
 // ─── Instances List (for Agent Factory page) ─────────────────────────────────
 
-export function EksInstancesTab() {
+export function EksInstancesTab({ agents }: { agents?: Agent[] }) {
   const { data: cluster } = useEksCluster();
   const { data: instancesData, isLoading, refetch } = useEksInstances();
+  const deployAgent = useDeployEksAgent();
   const stopAgent = useStopEksAgent();
   const reloadAgent = useReloadEksAgent();
   const [logsAgent, setLogsAgent] = useState('');
+  const [showDeploy, setShowDeploy] = useState(false);
 
   const instances = instancesData?.instances || [];
   const configured = cluster?.configured;
   const operatorReady = cluster?.operator?.installed;
+  const deployedNames = new Set(instances.map((i: any) => i.name));
 
   if (!configured) {
     return (
@@ -247,9 +252,14 @@ export function EksInstancesTab() {
         <p className="text-sm text-text-muted">
           {instances.length} instance{instances.length !== 1 ? 's' : ''} in namespace <code className="text-xs bg-dark-hover px-1.5 py-0.5 rounded">{instancesData?.namespace}</code>
         </p>
-        <Button size="sm" onClick={() => refetch()}>
-          <RefreshCw size={14} /> Refresh
-        </Button>
+        <div className="flex gap-2">
+          <Button size="sm" variant="primary" onClick={() => setShowDeploy(true)}>
+            <Plus size={14} /> Deploy Agent
+          </Button>
+          <Button size="sm" onClick={() => refetch()}>
+            <RefreshCw size={14} /> Refresh
+          </Button>
+        </div>
       </div>
 
       {isLoading ? (
@@ -297,7 +307,223 @@ export function EksInstancesTab() {
 
       {/* Logs modal */}
       {logsAgent && <LogsModal agentId={logsAgent} onClose={() => setLogsAgent('')} />}
+
+      {/* Deploy modal */}
+      {showDeploy && (
+        <DeployEksModal
+          agents={(agents || []).filter(a => !deployedNames.has(a.id))}
+          onDeploy={async (params) => {
+            await deployAgent.mutateAsync(params);
+            setShowDeploy(false);
+            refetch();
+          }}
+          isPending={deployAgent.isPending}
+          error={deployAgent.error?.message}
+          onClose={() => setShowDeploy(false)}
+        />
+      )}
     </div>
+  );
+}
+
+// ─── Deploy Modal ───────────────────────────────────────────────────────────
+
+const DEFAULT_MODELS = [
+  { value: 'bedrock/us.amazon.nova-2-lite-v1:0', label: 'Nova 2 Lite' },
+  { value: 'bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0', label: 'Claude Sonnet 4.5' },
+  { value: 'bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0', label: 'Claude Haiku 4.5' },
+  { value: 'bedrock/us.amazon.nova-pro-v1:0', label: 'Nova Pro' },
+];
+
+const SERVICE_TYPES = [
+  { value: '', label: 'ClusterIP (default)' },
+  { value: 'LoadBalancer', label: 'LoadBalancer' },
+  { value: 'NodePort', label: 'NodePort' },
+];
+
+function DeployEksModal({ agents, onDeploy, isPending, error, onClose }: {
+  agents: Agent[];
+  onDeploy: (params: EksDeployParams) => Promise<void>;
+  isPending: boolean;
+  error?: string;
+  onClose: () => void;
+}) {
+  const [agentId, setAgentId] = useState('');
+  const [model, setModel] = useState(DEFAULT_MODELS[0].value);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // Resources
+  const [cpuRequest, setCpuRequest] = useState('500m');
+  const [cpuLimit, setCpuLimit] = useState('2');
+  const [memoryRequest, setMemoryRequest] = useState('2Gi');
+  const [memoryLimit, setMemoryLimit] = useState('4Gi');
+
+  // Storage
+  const [storageClass, setStorageClass] = useState('');
+  const [storageSize, setStorageSize] = useState('10Gi');
+
+  // Sidecars & features
+  const [chromium, setChromium] = useState(false);
+
+  // Security & isolation
+  const [runtimeClass, setRuntimeClass] = useState('');
+  const [nodeSelectorStr, setNodeSelectorStr] = useState('');
+  const [tolerationsStr, setTolerationsStr] = useState('');
+
+  // Networking
+  const [serviceType, setServiceType] = useState('');
+
+  // Backup
+  const [backupSchedule, setBackupSchedule] = useState('');
+
+  const handleDeploy = async () => {
+    if (!agentId) return;
+    const params: EksDeployParams = { agentId, model };
+
+    // Only send non-default values
+    if (cpuRequest !== '500m') params.cpuRequest = cpuRequest;
+    if (cpuLimit !== '2') params.cpuLimit = cpuLimit;
+    if (memoryRequest !== '2Gi') params.memoryRequest = memoryRequest;
+    if (memoryLimit !== '4Gi') params.memoryLimit = memoryLimit;
+    if (storageClass) params.storageClass = storageClass;
+    if (storageSize !== '10Gi') params.storageSize = storageSize;
+    if (chromium) params.chromium = true;
+    if (runtimeClass) params.runtimeClass = runtimeClass;
+    if (serviceType) params.serviceType = serviceType;
+    if (backupSchedule) params.backupSchedule = backupSchedule;
+
+    // Parse nodeSelector JSON
+    if (nodeSelectorStr.trim()) {
+      try { params.nodeSelector = JSON.parse(nodeSelectorStr); }
+      catch { /* ignore invalid JSON */ }
+    }
+    // Parse tolerations JSON
+    if (tolerationsStr.trim()) {
+      try { params.tolerations = JSON.parse(tolerationsStr); }
+      catch { /* ignore invalid JSON */ }
+    }
+
+    await onDeploy(params);
+  };
+
+  return (
+    <Modal open={true} onClose={onClose} title="Deploy Agent to EKS" size="lg" footer={
+      <div className="flex justify-end gap-2">
+        <Button onClick={onClose}>Cancel</Button>
+        <Button variant="primary" onClick={handleDeploy} disabled={!agentId || isPending}>
+          {isPending ? <Loader2 size={14} className="animate-spin" /> : <Server size={14} />}
+          Deploy
+        </Button>
+      </div>
+    }>
+      <div className="space-y-4">
+        {/* Agent selection */}
+        <Select
+          label="Agent"
+          value={agentId}
+          onChange={setAgentId}
+          options={[
+            { value: '', label: 'Select an agent...' },
+            ...agents.map(a => ({ value: a.id, label: `${a.name} (${a.positionName || a.positionId})` })),
+          ]}
+          description="Only agents not already deployed to EKS are shown"
+        />
+
+        {/* Model */}
+        <Select
+          label="Bedrock Model"
+          value={model}
+          onChange={setModel}
+          options={DEFAULT_MODELS}
+        />
+
+        {/* Resource presets */}
+        <div>
+          <p className="text-sm font-medium text-text-primary mb-2">Compute Resources</p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <Input label="CPU Request" value={cpuRequest} onChange={setCpuRequest} placeholder="500m" />
+            <Input label="CPU Limit" value={cpuLimit} onChange={setCpuLimit} placeholder="2" />
+            <Input label="Memory Request" value={memoryRequest} onChange={setMemoryRequest} placeholder="2Gi" />
+            <Input label="Memory Limit" value={memoryLimit} onChange={setMemoryLimit} placeholder="4Gi" />
+          </div>
+        </div>
+
+        {/* Storage */}
+        <div className="grid grid-cols-2 gap-3">
+          <Input label="Storage Class" value={storageClass} onChange={setStorageClass} placeholder="cluster default (efs-sc)" />
+          <Input label="Storage Size" value={storageSize} onChange={setStorageSize} placeholder="10Gi" />
+        </div>
+
+        {/* Chromium toggle */}
+        <Toggle
+          label="Chromium Browser Sidecar"
+          checked={chromium}
+          onChange={setChromium}
+          description="Enable headless Chromium for browser automation and web scraping"
+        />
+
+        {/* Advanced section */}
+        <button
+          onClick={() => setShowAdvanced(!showAdvanced)}
+          className="text-xs text-primary hover:underline"
+        >
+          {showAdvanced ? 'Hide' : 'Show'} advanced options
+        </button>
+
+        {showAdvanced && (
+          <div className="space-y-4 border-t border-dark-border pt-4">
+            {/* Runtime class (Kata) */}
+            <Input
+              label="Runtime Class"
+              value={runtimeClass}
+              onChange={setRuntimeClass}
+              placeholder="e.g. kata-qemu for Firecracker isolation"
+              description="Use kata-qemu for hardware-level VM isolation (requires Kata Containers on nodes)"
+            />
+
+            {/* Networking */}
+            <Select
+              label="Service Type"
+              value={serviceType}
+              onChange={setServiceType}
+              options={SERVICE_TYPES}
+              description="How the agent's K8s Service is exposed"
+            />
+
+            {/* Backup */}
+            <Input
+              label="Backup Schedule"
+              value={backupSchedule}
+              onChange={setBackupSchedule}
+              placeholder='e.g. 0 2 * * * (daily at 2 AM)'
+              description="Cron schedule for S3 workspace backups (requires s3-backup-credentials Secret)"
+            />
+
+            {/* Node selector */}
+            <Input
+              label="Node Selector (JSON)"
+              value={nodeSelectorStr}
+              onChange={setNodeSelectorStr}
+              placeholder='{"katacontainers.io/kata-runtime": "true"}'
+              description="K8s nodeSelector labels for pod scheduling"
+            />
+
+            {/* Tolerations */}
+            <Input
+              label="Tolerations (JSON)"
+              value={tolerationsStr}
+              onChange={setTolerationsStr}
+              placeholder='[{"key": "kata", "value": "true", "effect": "NoSchedule"}]'
+              description="K8s tolerations for tainted nodes (GPU, Kata, spot instances)"
+            />
+          </div>
+        )}
+
+        {error && (
+          <div className="p-3 rounded-xl bg-danger/10 border border-danger/20 text-sm text-danger">{error}</div>
+        )}
+      </div>
+    </Modal>
   );
 }
 

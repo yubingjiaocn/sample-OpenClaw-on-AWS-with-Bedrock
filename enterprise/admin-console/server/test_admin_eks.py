@@ -65,7 +65,14 @@ with patch.dict("sys.modules", {
     })
     _mock_db.create_audit_entry = MagicMock()
 
-    with patch.dict("sys.modules", {"shared": _mock_shared, "db": _mock_db, "auth": MagicMock()}):
+    _mock_s3ops = MagicMock()
+    _mock_s3ops.get_soul_layers = MagicMock(return_value={
+        "global": {"SOUL.md": "You are a helpful AI assistant.", "AGENTS.md": "", "TOOLS.md": ""},
+        "position": {"SOUL.md": "You are an SDE.", "AGENTS.md": ""},
+        "personal": {"SOUL.md": "", "USER.md": "Carol, Engineering"},
+    })
+
+    with patch.dict("sys.modules", {"shared": _mock_shared, "db": _mock_db, "s3ops": _mock_s3ops, "auth": MagicMock()}):
         from fastapi.testclient import TestClient
         from routers.admin_eks import router
 
@@ -124,6 +131,19 @@ class TestDeploy(unittest.TestCase):
         self.assertEqual(body["agentId"], "agt-carol")
         self.assertEqual(body["namespace"], "openclaw")
         self.assertIn("openclaw.svc:18789", body["endpoint"])
+        # Verify workspace files from S3 SOUL layers are passed
+        self.assertIn("SOUL.md", body["workspaceFiles"])
+
+    def test_deploy_passes_workspace_files_and_skills(self):
+        resp = client.post("/api/v1/admin/eks/agt-carol/deploy", headers=AUTH_HEADER,
+                           json={"skills": ["jina-reader", "deep-research-pro"]})
+        self.assertEqual(resp.status_code, 200)
+        call_kwargs = _mock_k8s.create_openclaw_instance.call_args[1]
+        # Should pass assembled workspace files from s3ops.get_soul_layers
+        self.assertIn("SOUL.md", call_kwargs["workspace_files"])
+        self.assertIn("USER.md", call_kwargs["workspace_files"])
+        # Should pass skills
+        self.assertEqual(call_kwargs["skills"], ["jina-reader", "deep-research-pro"])
 
     def test_deploy_with_custom_model(self):
         resp = client.post("/api/v1/admin/eks/agt-carol/deploy", headers=AUTH_HEADER,
@@ -205,8 +225,13 @@ class TestReload(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         call_kwargs = _mock_k8s.patch_openclaw_instance.call_args[0]
         patch_body = call_kwargs[2]  # third positional arg is the patch dict
+        # Model ID should use amazon-bedrock/ prefix (matching openclaw.json provider name)
         self.assertEqual(patch_body["spec"]["config"]["raw"]["agents"]["defaults"]["model"]["primary"],
-                         "bedrock/claude-opus")
+                         "amazon-bedrock/claude-opus")
+        # Should also include full Bedrock provider config with model details
+        self.assertIn("models", patch_body["spec"]["config"]["raw"])
+        bedrock_models = patch_body["spec"]["config"]["raw"]["models"]["providers"]["amazon-bedrock"]["models"]
+        self.assertEqual(bedrock_models[0]["id"], "claude-opus")
 
     def test_reload_not_found(self):
         _mock_k8s.patch_openclaw_instance = AsyncMock(
