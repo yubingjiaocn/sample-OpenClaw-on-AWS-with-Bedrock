@@ -970,3 +970,116 @@ export function useSetEmployeeKBs() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['kb-assignments'] }),
   });
 }
+
+// ── EKS Cluster & Instances ────────────────────────────────────────────────────
+
+export function useEksCluster() {
+  return useQuery<any>({
+    queryKey: ['eks-cluster'],
+    queryFn: () => api.get('/admin/eks/cluster'),
+    staleTime: 30_000,
+  });
+}
+
+export function useDiscoverClusters() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.get<any>('/admin/eks/clusters/discover'),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['eks-discover'] }),
+  });
+}
+
+export function useAssociateCluster() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { name: string; region?: string }) =>
+      api.post<any>('/admin/eks/cluster', data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['eks-cluster'] });
+      qc.invalidateQueries({ queryKey: ['eks-instances'] });
+    },
+  });
+}
+
+export function useDisassociateCluster() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.del<any>('/admin/eks/cluster'),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['eks-cluster'] });
+      qc.invalidateQueries({ queryKey: ['eks-instances'] });
+    },
+  });
+}
+
+export function useEksInstances() {
+  return useQuery<any>({
+    queryKey: ['eks-instances'],
+    queryFn: () => api.get('/admin/eks/instances'),
+    staleTime: 15_000,
+    refetchInterval: 15_000,
+  });
+}
+
+export function useEksOperatorStatus() {
+  return useQuery<any>({
+    queryKey: ['eks-operator'],
+    queryFn: () => api.get('/admin/eks/operator/status'),
+    staleTime: 30_000,
+  });
+}
+
+export function useInstallOperator() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data?: { version?: string; chinaRegion?: boolean }) =>
+      api.post<any>('/admin/eks/operator/install', data || {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['eks-operator'] });
+      qc.invalidateQueries({ queryKey: ['eks-cluster'] });
+    },
+  });
+}
+
+export function useDeployEksAgent() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ agentId, ...body }: { agentId: string; model?: string; registry?: string }) =>
+      api.post<any>(`/admin/eks/${agentId}/deploy`, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['eks-instances'] }),
+  });
+}
+
+export function useStopEksAgent() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (agentId: string) => api.post<any>(`/admin/eks/${agentId}/stop`, {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['eks-instances'] }),
+  });
+}
+
+export function useReloadEksAgent() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ agentId, ...body }: { agentId: string; model?: string }) =>
+      api.post<any>(`/admin/eks/${agentId}/reload`, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['eks-instances'] }),
+  });
+}
+
+export function useEksAgentStatus(agentId: string) {
+  return useQuery<any>({
+    queryKey: ['eks-agent-status', agentId],
+    queryFn: () => api.get(`/admin/eks/${agentId}/status`),
+    enabled: !!agentId,
+    refetchInterval: 10_000,
+  });
+}
+
+export function useEksAgentLogs(agentId: string) {
+  return useQuery<any>({
+    queryKey: ['eks-agent-logs', agentId],
+    queryFn: () => api.get(`/admin/eks/${agentId}/logs?tail=200`),
+    enabled: !!agentId,
+  });
+}

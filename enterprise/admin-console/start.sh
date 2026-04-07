@@ -27,4 +27,4 @@ export CONSOLE_PORT="${CONSOLE_PORT:-8099}"
 export TENANT_ROUTER_URL="${TENANT_ROUTER_URL:-http://localhost:8090}"
 
 cd /opt/admin-console/server
-exec /opt/admin-venv/bin/python main.py
+exec python main.py

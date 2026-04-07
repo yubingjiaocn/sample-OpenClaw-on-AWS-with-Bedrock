@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Bot, Plus, Users, Star, Zap, Edit3, Play, Settings, Eye, Search, Filter, Cpu, SlidersHorizontal, Trash2, RefreshCw, Check } from 'lucide-react';
+import { Bot, Plus, Users, Star, Zap, Edit3, Play, Settings, Eye, Search, Filter, Cpu, SlidersHorizontal, Trash2, RefreshCw, Check, Cloud } from 'lucide-react';
 import { Card, StatCard, Badge, Button, PageHeader, Table as DataTable, Modal, Input, Select, StatusDot, Tabs } from '../../components/ui';
-import { useAgents, usePositions, useEmployees, useCreateAgent, useModelConfig, useUpdateModelConfig, useUpdateFallbackModel, useSetPositionModel, useRemovePositionModel, useSetEmployeeModel, useRemoveEmployeeModel, useAgentConfig, useSetPositionAgentConfig, useSetEmployeeAgentConfig } from '../../hooks/useApi';
+import { useAgents, usePositions, useEmployees, useCreateAgent, useModelConfig, useUpdateModelConfig, useUpdateFallbackModel, useSetPositionModel, useRemovePositionModel, useSetEmployeeModel, useRemoveEmployeeModel, useAgentConfig, useSetPositionAgentConfig, useSetEmployeeAgentConfig, useEksInstances } from '../../hooks/useApi';
+import { EksInstancesTab } from '../EKSCluster';
 import { CHANNEL_LABELS } from '../../types';
 import type { Agent, ChannelType } from '../../types';
 
@@ -66,10 +67,13 @@ export default function AgentList() {
     ? qualityAgents.reduce((s, a) => s + (a.qualityScore || 0), 0) / qualityAgents.length
     : null;
 
-  const serverlessAgents = AGENTS.filter(a => a.deployMode !== 'always-on-ecs');
-  const alwaysOnAgents = AGENTS.filter(a => a.deployMode === 'always-on-ecs');
+  const serverlessAgents = AGENTS.filter(a => !a.deployMode || a.deployMode === 'serverless');
+  const ecsAgents = AGENTS.filter(a => a.deployMode === 'always-on-ecs');
+  const eksAgents = AGENTS.filter(a => a.deployMode === 'eks');
+  const { data: eksInstancesData } = useEksInstances();
+  const eksInstanceCount = eksInstancesData?.instances?.length ?? eksAgents.length;
 
-  const currentList = activeTab === 'serverless' ? serverlessAgents : activeTab === 'always-on' ? alwaysOnAgents : AGENTS;
+  const currentList = activeTab === 'serverless' ? serverlessAgents : activeTab === 'ecs' ? ecsAgents : activeTab === 'all' ? AGENTS : AGENTS;
 
   // Unique departments from agents
   const deptSet = new Set(AGENTS.map(a => a.positionName));
@@ -93,8 +97,8 @@ export default function AgentList() {
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-5 mb-6">
         <StatCard title="Total Agents" value={AGENTS.length} icon={<Bot size={22} />} color="primary" />
         <StatCard title="Serverless" value={serverlessAgents.length} icon={<Users size={22} />} color="info" />
-        <StatCard title="Always-on" value={alwaysOnAgents.length} icon={<Zap size={22} />} color="cyan" />
-        <StatCard title="Active" value={AGENTS.filter(a => a.status === 'active').length} icon={<Zap size={22} />} color="success" />
+        <StatCard title="ECS" value={ecsAgents.length} icon={<Zap size={22} />} color="cyan" />
+        <StatCard title="EKS" value={eksInstanceCount} icon={<Cloud size={22} />} color="success" />
         <StatCard title="Avg Quality" value={avgQuality !== null ? `⭐ ${avgQuality.toFixed(1)}` : '—'} icon={<Star size={22} />} color="warning" />
       </div>
 
@@ -102,13 +106,17 @@ export default function AgentList() {
         <Tabs
           tabs={[
             { id: 'serverless', label: 'Serverless', count: serverlessAgents.length },
-            { id: 'always-on', label: 'Always-on (Fargate)', count: alwaysOnAgents.length },
+            { id: 'ecs', label: 'ECS (Fargate)', count: ecsAgents.length },
+            { id: 'eks', label: 'EKS', count: eksInstanceCount },
             { id: 'all', label: 'All', count: AGENTS.length },
             { id: 'config', label: 'Configuration' },
           ]}
           activeTab={activeTab}
           onChange={setActiveTab}
         />
+
+        {/* EKS tab — live OpenClawInstance CRDs from K8s */}
+        {activeTab === 'eks' && <EksInstancesTab />}
 
         {/* Configuration tab — model & memory settings per position/employee */}
         {activeTab === 'config' && (
@@ -212,7 +220,7 @@ export default function AgentList() {
               </div>
             </div>
             <div className="space-y-3">
-              {alwaysOnAgents.map(a => {
+              {ecsAgents.map(a => {
                 const isOn = a.deployMode === 'always-on-ecs';
                 const isStarting = a.containerStatus === 'starting' || a.containerStatus === 'reloading';
                 return (
@@ -253,7 +261,7 @@ export default function AgentList() {
                   </div>
                 );
               })}
-              {alwaysOnAgents.length === 0 && (
+              {ecsAgents.length === 0 && (
                 <div className="text-center py-8 text-text-muted">
                   <Bot size={28} className="mx-auto mb-2 opacity-30" />
                   <p className="text-sm">No always-on agents</p>
@@ -265,7 +273,7 @@ export default function AgentList() {
         )}
 
         {/* Filters */}
-        <div className={`${activeTab === 'config' || activeTab === 'shared' ? 'hidden' : ''} mt-4 mb-4 flex flex-wrap items-center gap-3`}>
+        <div className={`${activeTab === 'config' || activeTab === 'shared' || activeTab === 'eks' ? 'hidden' : ''} mt-4 mb-4 flex flex-wrap items-center gap-3`}>
           <div className="relative flex-1 max-w-xs">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
             <input

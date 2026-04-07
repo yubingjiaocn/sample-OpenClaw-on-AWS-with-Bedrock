@@ -112,9 +112,13 @@ def get_agents(authorization: str = Header(default="")):
         a.setdefault("skills", [])
         a.setdefault("soulVersions", {})
 
-    # Dynamic status: check CloudWatch for recent activity
+    # Dynamic status: check CloudWatch for recent activity (AgentCore only)
     active_emp_ids = _get_active_agent_ids()
     for a in agents:
+        # EKS and always-on-ecs agents have their own status endpoints;
+        # don't override with CloudWatch-based idle detection.
+        if a.get("deployMode") in ("eks", "always-on-ecs"):
+            continue
         emp_id = a.get("employeeId", "")
         if emp_id in active_emp_ids:
             a["status"] = "active"
@@ -137,13 +141,14 @@ def get_agent(agent_id: str):
     agent.setdefault("channels", [])
     agent.setdefault("skills", [])
     agent.setdefault("soulVersions", {})
-    # Dynamic status
-    active_emp_ids = _get_active_agent_ids()
-    emp_id = agent.get("employeeId", "")
-    if emp_id in active_emp_ids:
-        agent["status"] = "active"
-    elif agent.get("status") == "active":
-        agent["status"] = "idle"
+    # Dynamic status (AgentCore only; EKS/ECS have their own status endpoints)
+    if agent.get("deployMode") not in ("eks", "always-on-ecs"):
+        active_emp_ids = _get_active_agent_ids()
+        emp_id = agent.get("employeeId", "")
+        if emp_id in active_emp_ids:
+            agent["status"] = "active"
+        elif agent.get("status") == "active":
+            agent["status"] = "idle"
     return agent
 
 @router.post("/api/v1/agents")
@@ -250,7 +255,9 @@ def create_agent(body: dict):
 
         # 6. If always-on, mark as pending -- admin starts from Agent Factory
         if deploy_mode == "always-on-ecs":
-            agent["note"] = "Agent created with Always-on mode. Go to Agent Factory -> Always-on tab -> Start to launch the ECS container."
+            agent["note"] = "Agent created with ECS mode. Go to Agent Factory -> ECS tab -> Start to launch the Fargate container."
+        elif deploy_mode == "eks":
+            agent["note"] = "Agent created with EKS mode. Go to Agent Factory -> EKS tab -> Deploy to launch the K8s pod."
 
     return agent
 

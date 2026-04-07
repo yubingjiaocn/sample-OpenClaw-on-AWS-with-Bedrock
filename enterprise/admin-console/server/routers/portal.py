@@ -768,17 +768,17 @@ def portal_channels(authorization: str = Header(default="")):
     if has_dedicated:
         for ch, has_token in dedicated_bots.items():
             if has_token:
-                ch_instructions[ch] = f"Your agent has a dedicated {ch.title()} bot. Messages go directly to your always-on agent — no pairing needed."
+                ch_instructions[ch] = f"Your agent has a dedicated {ch.title()} bot. Messages go directly to your ECS agent — no pairing needed."
 
     # Mode banner text
     if is_always_on and has_dedicated:
         ch_instructions["mode_note"] = (
-            "Your agent is Always-on with a dedicated IM bot. "
+            "Your agent runs on ECS Fargate with a dedicated IM bot. "
             "Messages go directly to your persistent agent — instant response, no cold start."
         )
     elif is_always_on:
         ch_instructions["mode_note"] = (
-            "Your agent is Always-on (instant response, no cold start). "
+            "Your agent runs on ECS Fargate (instant response, no cold start). "
             "Connect via the company bot below — your messages are routed to your dedicated agent container."
         )
     else:
