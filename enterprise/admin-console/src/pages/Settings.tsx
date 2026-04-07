@@ -6,6 +6,7 @@ import {
   ChevronDown,
 } from 'lucide-react';
 import { Card, Badge, Button, PageHeader, Tabs, Select } from '../components/ui';
+import { EksClusterTab } from './EKSCluster';
 import {
   useAdminAssistant, useUpdateAdminAssistant,
   useChangeAdminPassword, useSystemStats, useServiceStatus, useModelConfig,
@@ -379,6 +380,7 @@ export default function Settings() {
           { id: 'account', label: 'Account' },
           { id: 'interface', label: 'Interface' },
           { id: 'assistant', label: 'Admin Assistant' },
+          { id: 'eks', label: 'EKS' },
           { id: 'system', label: 'System' },
         ]}
         activeTab={tab}
@@ -389,6 +391,7 @@ export default function Settings() {
         {tab === 'account' && <AccountTab />}
         {tab === 'interface' && <InterfaceTab />}
         {tab === 'assistant' && <AdminAssistantTab />}
+        {tab === 'eks' && <EksClusterTab />}
         {tab === 'system' && <SystemTab />}
       </div>
     </div>

@@ -52,6 +52,7 @@ from routers.security import router as _security_router
 from routers.admin_im import router as _admin_im_router
 from routers.admin_ai import router as _admin_ai_router
 from routers.admin_always_on import router as _admin_always_on_router
+from routers.admin_eks import router as _admin_eks_router
 from routers.twin import router as _twin_router
 
 app.include_router(_gateway_proxy_router)
@@ -69,6 +70,7 @@ app.include_router(_security_router)
 app.include_router(_admin_im_router)
 app.include_router(_admin_ai_router)
 app.include_router(_admin_always_on_router)
+app.include_router(_admin_eks_router)
 app.include_router(_twin_router)
 
 # =========================================================================

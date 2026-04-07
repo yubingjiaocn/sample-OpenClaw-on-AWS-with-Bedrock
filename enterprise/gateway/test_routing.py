@@ -408,5 +408,150 @@ class TestEndToEndChain(unittest.TestCase):
         self.assertTrue(body["tenant_id"].startswith("tg__987654321__"))
 
 
+# ---------------------------------------------------------------------------
+# 7. EKS routing — _get_eks_endpoint + 3-tier routing chain
+# ---------------------------------------------------------------------------
+
+class TestGetEksEndpoint(unittest.TestCase):
+
+    def setUp(self):
+        # Clear EKS cache between tests
+        tenant_router._eks_cache.clear()
+        tenant_router._eks_cache_ts.clear()
+
+    def test_eks_endpoint_found(self):
+        mock_ssm = MagicMock()
+        mock_ssm.get_parameter.return_value = {
+            "Parameter": {"Value": "http://agt-carol.openclaw.svc:18789"}
+        }
+        with patch("boto3.client", return_value=mock_ssm):
+            result = tenant_router._get_eks_endpoint("emp-carol", "whatsapp")
+        self.assertEqual(result, "http://agt-carol.openclaw.svc:18789")
+
+    def test_eks_endpoint_not_found(self):
+        mock_ssm = MagicMock()
+        mock_ssm.get_parameter.side_effect = Exception("ParameterNotFound")
+        with patch("boto3.client", return_value=mock_ssm):
+            result = tenant_router._get_eks_endpoint("emp-unknown", "telegram")
+        self.assertEqual(result, "")
+
+    def test_eks_endpoint_cached(self):
+        mock_ssm = MagicMock()
+        mock_ssm.get_parameter.return_value = {
+            "Parameter": {"Value": "http://agt-1.openclaw.svc:18789"}
+        }
+        with patch("boto3.client", return_value=mock_ssm):
+            r1 = tenant_router._get_eks_endpoint("emp-1", "wa")
+            r2 = tenant_router._get_eks_endpoint("emp-1", "wa")
+        self.assertEqual(r1, r2)
+        # SSM should only be called once due to caching
+        mock_ssm.get_parameter.assert_called_once()
+
+    def test_eks_endpoint_ssm_path(self):
+        """Verify the correct SSM parameter path is queried."""
+        mock_ssm = MagicMock()
+        mock_ssm.get_parameter.side_effect = Exception("not found")
+        with patch("boto3.client", return_value=mock_ssm):
+            with patch.object(tenant_router, "STACK_NAME", "my-stack"):
+                tenant_router._get_eks_endpoint("emp-carol", "dc")
+        call_kwargs = mock_ssm.get_parameter.call_args[1]
+        self.assertEqual(call_kwargs["Name"], "/openclaw/my-stack/tenants/emp-carol/eks-endpoint")
+
+
+class TestThreeTierRouting(unittest.TestCase):
+    """Test the 3-tier routing chain: ECS always-on → EKS pod → AgentCore."""
+
+    def setUp(self):
+        tenant_router._always_on_cache.clear()
+        tenant_router._always_on_cache_ts.clear()
+        tenant_router._eks_cache.clear()
+        tenant_router._eks_cache_ts.clear()
+
+    def test_always_on_takes_priority_over_eks(self):
+        """If user has both always-on and EKS assignments, always-on wins."""
+        handler, responses = _make_handler("POST", "/route", {
+            "channel": "whatsapp",
+            "user_id": "emp-dual",
+            "message": "Hello",
+        })
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"response": "from ECS"}
+
+        with patch.object(tenant_router, "_get_always_on_endpoint", return_value="http://localhost:9000"):
+            with patch.object(tenant_router, "_get_eks_endpoint", return_value="http://agt.openclaw.svc:18789") as mock_eks:
+                with patch("requests.post", return_value=mock_resp):
+                    handler.do_POST()
+
+        status, body = responses[0]
+        self.assertEqual(status, 200)
+        # EKS endpoint should NOT have been checked (short-circuit)
+        mock_eks.assert_not_called()
+
+    def test_eks_used_when_no_always_on(self):
+        """If no always-on but EKS endpoint exists, route to EKS pod."""
+        handler, responses = _make_handler("POST", "/route", {
+            "channel": "telegram",
+            "user_id": "emp-eks",
+            "message": "Hello from EKS",
+        })
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"response": "from K8s pod"}
+
+        with patch.object(tenant_router, "_get_always_on_endpoint", return_value=""):
+            with patch.object(tenant_router, "_get_eks_endpoint", return_value="http://agt-eks.openclaw.svc:18789"):
+                with patch("requests.post", return_value=mock_resp) as mock_post:
+                    handler.do_POST()
+
+        status, body = responses[0]
+        self.assertEqual(status, 200)
+        self.assertEqual(body["response"]["response"], "from K8s pod")
+        # Verify the call went to the EKS endpoint
+        call_url = mock_post.call_args[0][0]
+        self.assertIn("agt-eks.openclaw.svc:18789", call_url)
+
+    def test_agentcore_fallback_when_no_eks_no_always_on(self):
+        """If neither always-on nor EKS, fall through to AgentCore."""
+        handler, responses = _make_handler("POST", "/route", {
+            "channel": "discord",
+            "user_id": "emp-serverless",
+            "message": "Hello serverless",
+        })
+
+        with patch.object(tenant_router, "_get_always_on_endpoint", return_value=""):
+            with patch.object(tenant_router, "_get_eks_endpoint", return_value=""):
+                with patch.object(tenant_router, "invoke_agent_runtime",
+                                  return_value={"response": "from AgentCore"}) as mock_ac:
+                    handler.do_POST()
+
+        status, body = responses[0]
+        self.assertEqual(status, 200)
+        self.assertEqual(body["response"]["response"], "from AgentCore")
+        mock_ac.assert_called_once()
+
+    def test_eks_failure_returns_502(self):
+        """If EKS pod is unreachable, return 502."""
+        handler, responses = _make_handler("POST", "/route", {
+            "channel": "whatsapp",
+            "user_id": "emp-eks-fail",
+            "message": "Hello",
+        })
+
+        import requests as _req
+        with patch.object(tenant_router, "_get_always_on_endpoint", return_value=""):
+            with patch.object(tenant_router, "_get_eks_endpoint",
+                              return_value="http://agt-dead.openclaw.svc:18789"):
+                with patch("requests.post",
+                           side_effect=_req.exceptions.ConnectionError("connection refused")):
+                    handler.do_POST()
+
+        status, body = responses[0]
+        self.assertEqual(status, 502)
+        self.assertIn("not reachable", body["error"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -31,4 +31,4 @@ export DYNAMODB_TABLE="${DYNAMODB_TABLE:-${STACK_NAME}}"
 export DYNAMODB_REGION="${DYNAMODB_REGION:-${AWS_REGION}}"
 
 cd /opt/admin-console/server
-exec /opt/admin-venv/bin/python main.py
+exec python main.py

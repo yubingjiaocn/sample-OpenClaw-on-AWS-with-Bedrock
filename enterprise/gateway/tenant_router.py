@@ -453,6 +453,41 @@ def _get_always_on_endpoint(user_id: str, channel: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# EKS pod routing (OpenClawInstance on K8s)
+# ---------------------------------------------------------------------------
+
+_eks_cache: dict = {}
+_eks_cache_ts: dict = {}
+_EKS_TTL = 60  # seconds
+
+def _get_eks_endpoint(user_id: str, channel: str) -> str:
+    """Return the K8s Service endpoint for an EKS-deployed agent,
+    or empty string if the user should fall through to AgentCore.
+
+    EKS endpoints are registered in SSM by the admin console:
+      /openclaw/{stack}/tenants/{emp_id}/eks-endpoint = "http://{agent}.openclaw.svc:18789"
+    """
+    now = time.time()
+    cache_key = f"eks__{user_id}"
+    if cache_key in _eks_cache and now - _eks_cache_ts.get(cache_key, 0) < _EKS_TTL:
+        return _eks_cache[cache_key]
+
+    try:
+        ssm = boto3.client("ssm", region_name=AWS_REGION)
+        r = ssm.get_parameter(
+            Name=f"/openclaw/{STACK_NAME}/tenants/{user_id}/eks-endpoint")
+        endpoint = r["Parameter"]["Value"]
+        _eks_cache[cache_key] = endpoint
+        _eks_cache_ts[cache_key] = now
+        logger.info("EKS routing: %s → %s", user_id, endpoint)
+        return endpoint
+    except Exception:
+        _eks_cache[cache_key] = ""
+        _eks_cache_ts[cache_key] = now
+        return ""
+
+
+# ---------------------------------------------------------------------------
 # HTTP server — receives webhooks from OpenClaw Gateway
 # ---------------------------------------------------------------------------
 
@@ -531,10 +566,14 @@ class TenantRouterHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            # Check if this routes to an always-on Docker container
+            # 3-tier routing: Always-on ECS → EKS pod → AgentCore (serverless)
             always_on_url = _get_always_on_endpoint(user_id, channel)
+            eks_url = _get_eks_endpoint(user_id, channel) if not always_on_url else ""
+
             if always_on_url:
                 result = _invoke_local_container(always_on_url, tenant_id, message, payload.get("model"))
+            elif eks_url:
+                result = _invoke_local_container(eks_url, tenant_id, message, payload.get("model"))
             else:
                 result = invoke_agent_runtime(
                     tenant_id=tenant_id,

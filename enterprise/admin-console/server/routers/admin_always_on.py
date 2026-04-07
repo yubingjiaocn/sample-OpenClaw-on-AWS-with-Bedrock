@@ -233,7 +233,7 @@ def start_always_on_agent(agent_id: str, authorization: str = Header(default="")
         print(f"[always-on] DynamoDB update failed: {e}")
 
     return {"started": True, "agentId": agent_id, "serviceName": service_name,
-            "note": "ECS Service created/scaled. Container starts in ~30s with auto-restart."}
+            "note": "ECS Fargate service created/scaled. Container starts in ~30s with auto-restart."}
 
 
 @router.post("/api/v1/admin/always-on/{agent_id}/stop")
@@ -318,7 +318,7 @@ def set_always_on_tokens(agent_id: str, body: dict, authorization: str = Header(
                 pass
             saved[channel] = False
     return {"saved": saved, "agentId": agent_id,
-            "note": "Tokens stored. Restart the always-on container to activate direct IM."}
+            "note": "Tokens stored. Restart the ECS container to activate direct IM."}
 
 
 @router.get("/api/v1/admin/always-on/{agent_id}/tokens")
@@ -414,7 +414,7 @@ def reload_always_on_agent(agent_id: str, body: dict, authorization: str = Heade
         "detail": f"Container reloaded via ECS Service force-new-deployment", "status": "success",
     })
     return {"reloaded": True, "agentId": agent_id, "serviceName": service_name,
-            "note": "ECS replacing container (~30s). New config active on next message."}
+            "note": "ECS Fargate replacing container (~30s). New config active on next message."}
 
 
 @router.get("/api/v1/admin/always-on/{agent_id}/images")

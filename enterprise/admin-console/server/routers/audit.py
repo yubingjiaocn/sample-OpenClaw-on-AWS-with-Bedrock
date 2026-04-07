@@ -298,7 +298,7 @@ def request_always_on(body: dict, authorization: str = Header(default="")):
         ssm_chk = _boto3_audit.client("ssm", region_name=GATEWAY_REGION)
         ssm_chk.get_parameter(
             Name=f"/openclaw/{stack}/tenants/{user.employee_id}/always-on-agent")
-        raise HTTPException(400, "Already in always-on mode")
+        raise HTTPException(400, "Already in ECS mode")
     except HTTPException:
         raise
     except Exception:
@@ -323,10 +323,10 @@ def request_always_on(body: dict, authorization: str = Header(default="")):
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "eventType": "always_on_request", "actorId": user.employee_id,
         "actorName": user.name, "targetType": "agent", "targetId": user.employee_id,
-        "detail": f"Employee requested always-on mode: {reason}", "status": "pending",
+        "detail": f"Employee requested ECS mode: {reason}", "status": "pending",
     })
     return {"requested": True, "approvalId": approval_id,
-            "message": "Request submitted. IT admin will review and activate always-on mode for your agent."}
+            "message": "Request submitted. IT admin will review and activate ECS mode for your agent."}
 
 
 @router.post("/api/v1/portal/feedback")

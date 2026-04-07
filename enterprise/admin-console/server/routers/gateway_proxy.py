@@ -217,7 +217,7 @@ def get_gateway_access(authorization: str = Header(default="")):
     if not result:
         return {
             "available": False,
-            "reason": "Your agent is not in always-on mode. IM channels are managed through the shared company bot.",
+            "reason": "Your agent is not in ECS mode. IM channels are managed through the shared company bot.",
             "deployMode": "serverless",
         }
 
@@ -366,7 +366,7 @@ async def proxy_gateway(path: str, request: Request, authorization: str = Header
     result = _get_cached_gateway(user.employee_id)
 
     if not result:
-        raise HTTPException(403, "Gateway not available — agent is not always-on")
+        raise HTTPException(403, "Gateway not available — agent is not in ECS mode")
 
     base_url, token = result
 

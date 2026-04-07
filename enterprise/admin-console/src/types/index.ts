@@ -57,7 +57,7 @@ export interface Agent {
   createdAt: string;
   updatedAt: string;
   // Always-on agent fields (ECS Fargate)
-  deployMode?: 'personal' | 'always-on' | 'always-on-ecs' | 'serverless';
+  deployMode?: 'serverless' | 'always-on-ecs' | 'eks';
   containerPort?: number;
   containerStatus?: 'starting' | 'running' | 'stopped' | 'error' | 'reloading';
   ecsServiceName?: string;
