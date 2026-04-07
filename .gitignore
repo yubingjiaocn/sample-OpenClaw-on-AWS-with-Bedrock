@@ -15,6 +15,15 @@ admin-console/node_modules/
 
 # Build artifacts
 *.pkg
+enterprise/admin-console/dist/
+
+# Terraform
+eks/terraform/.terraform/
+eks/terraform/*.tfstate
+eks/terraform/*.tfstate.*
+eks/terraform/*.tfvars
+!eks/terraform/*.tfvars.example
+eks/terraform/.terraform.lock.hcl
 
 # Demo
 enterprise/demo/dist/

@@ -1,0 +1,210 @@
+# =============================================================================
+# Core Infrastructure (always deployed)
+# =============================================================================
+
+module "vpc" {
+  source = "./modules/vpc"
+
+  name     = local.name
+  vpc_cidr = var.vpc_cidr
+  azs      = local.azs
+
+  enable_alb_controller = var.enable_alb_controller
+  enable_karpenter      = var.enable_karpenter
+  cluster_name          = local.name
+
+  tags = local.tags
+}
+
+module "eks_cluster" {
+  source = "./modules/eks-cluster"
+
+  name            = local.name
+  cluster_version = var.eks_cluster_version
+  vpc_id          = module.vpc.vpc_id
+  subnet_ids      = module.vpc.private_subnets
+
+  ami_type            = local.ami_type
+  core_instance_types = local.core_instance_types
+  core_node_count     = var.core_node_count
+
+  access_entries      = var.access_entries
+  kms_key_admin_roles = var.kms_key_admin_roles
+
+  is_china_region = local.is_china_region
+  partition       = local.partition
+
+  tags = local.tags
+}
+
+module "storage" {
+  source = "./modules/storage"
+
+  cluster_name           = module.eks_cluster.cluster_name
+  vpc_id                 = module.vpc.vpc_id
+  private_subnets        = module.vpc.private_subnets
+  node_security_group_id = module.eks_cluster.node_security_group_id
+
+  enable_efs      = var.enable_efs
+  is_china_region = local.is_china_region
+  partition       = local.partition
+
+  tags = local.tags
+}
+
+# =============================================================================
+# Bedrock IAM (always deployed — needed for OpenClaw model access)
+# =============================================================================
+
+module "bedrock_iam" {
+  source = "./modules/bedrock-iam"
+
+  name                = local.name
+  cluster_name        = module.eks_cluster.cluster_name
+  cluster_oidc_issuer = module.eks_cluster.oidc_issuer
+  oidc_provider_arn   = module.eks_cluster.oidc_provider_arn
+  openclaw_namespace  = local.openclaw_namespace
+
+  is_china_region = local.is_china_region
+  partition       = local.partition
+
+  tags = local.tags
+}
+
+# =============================================================================
+# OpenClaw Operator (always deployed)
+# =============================================================================
+
+module "operator" {
+  source = "./modules/operator"
+
+  cluster_name       = module.eks_cluster.cluster_name
+  operator_namespace = local.operator_namespace
+  is_china_region    = local.is_china_region
+
+  tags = local.tags
+
+  depends_on = [module.eks_cluster]
+}
+
+# =============================================================================
+# Admin Console (optional — EKS-native control panel)
+# =============================================================================
+
+module "admin_console" {
+  count  = var.enable_admin_console ? 1 : 0
+  source = "./modules/admin-console"
+
+  name               = local.name
+  cluster_name       = module.eks_cluster.cluster_name
+  openclaw_namespace = local.openclaw_namespace
+  region             = local.region
+  admin_password     = var.admin_password
+  image_tag          = var.admin_console_image_tag
+
+  is_china_region = local.is_china_region
+  partition       = local.partition
+
+  tags = local.tags
+
+  depends_on = [module.eks_cluster, module.operator]
+}
+
+# =============================================================================
+# Optional: Kata Containers + Karpenter
+# =============================================================================
+
+module "kata" {
+  count  = var.enable_kata ? 1 : 0
+  source = "./modules/kata"
+
+  cluster_name        = module.eks_cluster.cluster_name
+  cluster_endpoint    = module.eks_cluster.cluster_endpoint
+  cluster_ca_data     = module.eks_cluster.cluster_ca_data
+  kata_namespace      = local.kata_namespace
+  kata_hypervisor     = var.kata_hypervisor
+  kata_instance_types = local.kata_instance_types
+  architecture        = var.architecture
+  enable_karpenter    = var.enable_karpenter
+  node_iam_role_name  = module.eks_cluster.node_iam_role_name
+  vpc_cidr            = var.vpc_cidr
+
+  is_china_region = local.is_china_region
+  partition       = local.partition
+
+  tags = local.tags
+
+  depends_on = [module.eks_cluster]
+}
+
+# =============================================================================
+# Optional: Networking (ALB Controller + CloudFront)
+# =============================================================================
+
+module "networking" {
+  count  = var.enable_alb_controller ? 1 : 0
+  source = "./modules/networking"
+
+  cluster_name        = module.eks_cluster.cluster_name
+  cluster_version     = var.eks_cluster_version
+  oidc_provider_arn   = module.eks_cluster.oidc_provider_arn
+  cluster_oidc_issuer = module.eks_cluster.oidc_issuer
+  vpc_id              = module.vpc.vpc_id
+
+  enable_cloudfront = var.enable_cloudfront
+
+  is_china_region = local.is_china_region
+  partition       = local.partition
+
+  tags = local.tags
+
+  depends_on = [module.eks_cluster]
+}
+
+# =============================================================================
+# Optional: Monitoring (Prometheus + Grafana)
+# =============================================================================
+
+module "monitoring" {
+  count  = var.enable_monitoring ? 1 : 0
+  source = "./modules/monitoring"
+
+  cluster_name = module.eks_cluster.cluster_name
+
+  tags = local.tags
+
+  depends_on = [module.storage]
+}
+
+# =============================================================================
+# Optional: LiteLLM AI Proxy
+# =============================================================================
+
+module "litellm" {
+  count  = var.enable_litellm ? 1 : 0
+  source = "./modules/litellm"
+
+  cluster_name        = module.eks_cluster.cluster_name
+  cluster_oidc_issuer = module.eks_cluster.oidc_issuer
+  oidc_provider_arn   = module.eks_cluster.oidc_provider_arn
+
+  is_china_region = local.is_china_region
+  partition       = local.partition
+
+  tags = local.tags
+
+  depends_on = [module.eks_cluster]
+}
+
+# =============================================================================
+# Optional: Agent Sandbox CRDs
+# =============================================================================
+
+module "agent_sandbox" {
+  count  = var.enable_agent_sandbox ? 1 : 0
+  source = "./modules/agent-sandbox"
+
+  cluster_name = module.eks_cluster.cluster_name
+
+  depends_on = [module.eks_cluster]
+}
