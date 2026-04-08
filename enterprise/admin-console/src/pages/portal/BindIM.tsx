@@ -421,27 +421,27 @@ export default function BindIM() {
 
       {/* Mode Banner */}
       <div className={`rounded-xl border px-4 py-3 flex items-start gap-3 ${
-        deployMode === 'always-on-ecs'
+        deployMode === 'always-on-ecs' || deployMode === 'eks'
           ? 'bg-primary/5 border-primary/20'
           : 'bg-surface-dim border-dark-border/40'
       }`}>
-        {deployMode === 'always-on-ecs' ? (
+        {deployMode === 'always-on-ecs' || deployMode === 'eks' ? (
           <Zap size={16} className="text-primary mt-0.5 flex-shrink-0" />
         ) : (
           <Radio size={16} className="text-text-muted mt-0.5 flex-shrink-0" />
         )}
         <div className="flex-1">
           <p className="text-sm font-medium text-text-primary">
-            {deployMode === 'always-on-ecs' ? '⚡ Always-on' : 'Serverless'}
+            {deployMode === 'always-on-ecs' ? '⚡ Always-on (ECS)' : deployMode === 'eks' ? '☸ Always-on (EKS)' : 'Serverless'}
           </p>
           <p className="text-xs text-text-muted mt-0.5">
             {instructions.mode_note || (
-              deployMode === 'always-on-ecs'
+              deployMode === 'always-on-ecs' || deployMode === 'eks'
                 ? 'Your agent runs 24/7. Open the Gateway Console below to manage your IM connections directly.'
                 : 'Your agent starts on demand. Connect via the company bot below.'
             )}
           </p>
-          {deployMode === 'always-on-ecs' && (
+          {(deployMode === 'always-on-ecs' || deployMode === 'eks') && (
             <GatewayConsoleButton />
           )}
         </div>
