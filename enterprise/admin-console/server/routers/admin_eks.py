@@ -537,6 +537,21 @@ async def reload_eks_agent(agent_id: str, body: dict = {}, authorization: str = 
         },
     }
 
+    # Optionally update image tag (or full repository:tag)
+    image_updated = ""
+    if body.get("imageTag") or body.get("image"):
+        image_patch = {}
+        if body.get("image"):
+            # Full image URI: "repo:tag" or just "repo" (keeps current tag)
+            parts = body["image"].rsplit(":", 1)
+            image_patch["repository"] = parts[0]
+            if len(parts) > 1:
+                image_patch["tag"] = parts[1]
+        elif body.get("imageTag"):
+            image_patch["tag"] = body["imageTag"]
+        patch.setdefault("spec", {})["image"] = image_patch
+        image_updated = body.get("image") or body.get("imageTag")
+
     # Optionally update model — update both config.raw and BEDROCK_MODEL_ID env var
     if body.get("model"):
         new_model = body["model"]
@@ -581,12 +596,94 @@ async def reload_eks_agent(agent_id: str, body: dict = {}, authorization: str = 
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "eventType": "config_change", "actorId": "admin", "actorName": "Admin",
         "targetType": "agent", "targetId": agent_id,
-        "detail": f"Reloaded EKS agent (config-version={config_version})",
+        "detail": f"Reloaded EKS agent (config-version={config_version}"
+                  f"{', image=' + image_updated if image_updated else ''})",
         "status": "success",
     })
 
     return {"reloaded": True, "agentId": agent_id, "configVersion": config_version,
+            "imageUpdated": image_updated or None,
             "note": "CRD patched. Operator will restart pod with new config (~30s)."}
+
+
+@router.get("/api/v1/admin/eks/{agent_id}/images")
+async def list_eks_agent_images(agent_id: str, authorization: str = Header(default="")):
+    """List available container image tags for an EKS agent.
+
+    Checks two sources:
+    1. ECR mirror (if globalRegistry is set or China region) — for air-gapped/China clusters
+    2. ghcr.io/openclaw/openclaw (public, no auth) — default upstream registry
+
+    Returns the current CRD image as reference plus available tags.
+    """
+    require_role(authorization, roles=["admin"])
+
+    # Get current image from CRD
+    crd = await k8s_client.get_openclaw_instance(OPENCLAW_NAMESPACE, agent_id)
+    current_image = crd.get("spec", {}).get("image", {}) if crd else {}
+    current_repo = current_image.get("repository", "ghcr.io/openclaw/openclaw")
+    current_tag = current_image.get("tag", "latest")
+
+    images = []
+    sources = []
+
+    # 1. Try ECR mirror
+    global_registry = os.environ.get("OPENCLAW_REGISTRY", "")
+    ecr_repo = "openclaw/openclaw"
+    if global_registry or IS_CHINA_REGION:
+        try:
+            region = os.environ.get("AWS_REGION", GATEWAY_REGION)
+            ecr = boto3.client("ecr", region_name=region)
+            resp = ecr.describe_images(
+                repositoryName=ecr_repo,
+                filter={"tagStatus": "TAGGED"})
+            for img in sorted(resp.get("imageDetails", []),
+                              key=lambda x: x.get("imagePushedAt", ""), reverse=True)[:20]:
+                for tag in (img.get("imageTags") or []):
+                    images.append({
+                        "tag": tag,
+                        "repository": f"{global_registry}/{ecr_repo}" if global_registry else ecr_repo,
+                        "source": "ecr",
+                        "digest": img.get("imageDigest", "")[:20],
+                        "pushed": str(img.get("imagePushedAt", ""))[:19],
+                        "sizeMB": round(img.get("imageSizeInBytes", 0) / 1024 / 1024, 1),
+                    })
+            sources.append("ecr")
+        except Exception as e:
+            logger.info("ECR image list failed for %s: %s", ecr_repo, e)
+
+    # 2. ghcr.io (public, anonymous bearer token required)
+    try:
+        tok_resp = _requests.get(
+            "https://ghcr.io/token?service=ghcr.io&scope=repository:openclaw/openclaw:pull",
+            timeout=5)
+        ghcr_token = tok_resp.json().get("token", "") if tok_resp.ok else ""
+        if ghcr_token:
+            ghcr_resp = _requests.get(
+                "https://ghcr.io/v2/openclaw/openclaw/tags/list",
+                headers={"Authorization": f"Bearer {ghcr_token}"},
+                timeout=5,
+            )
+            if ghcr_resp.status_code == 200:
+                tags = ghcr_resp.json().get("tags", [])
+                # Filter to release tags (e.g. "2026.3.1"), skip arch-specific
+                release_tags = [t for t in tags
+                                if not t.endswith(("-amd64", "-arm64"))]
+                for tag in reversed(release_tags[-20:]):
+                    images.append({
+                        "tag": tag,
+                        "repository": "ghcr.io/openclaw/openclaw",
+                        "source": "ghcr",
+                    })
+                sources.append("ghcr")
+    except Exception as e:
+        logger.info("ghcr.io tag list failed: %s", e)
+
+    return {
+        "images": images,
+        "sources": sources,
+        "currentImage": {"repository": current_repo, "tag": current_tag},
+    }
 
 
 @router.get("/api/v1/admin/eks/{agent_id}/status")
