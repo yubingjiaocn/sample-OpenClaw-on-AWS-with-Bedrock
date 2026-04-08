@@ -11,17 +11,21 @@ Endpoints:
 """
 
 import asyncio
+import logging
 import os
 from datetime import datetime, timezone
 
 import boto3
+import requests as _requests
 
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, HTTPException, Header, Request, Response, WebSocket, WebSocketDisconnect
 
 import db
 import s3ops
 from shared import require_role, ssm_client, STACK_NAME, GATEWAY_REGION
 from services.k8s_client import k8s_client, OPENCLAW_NAMESPACE, OPERATOR_NAMESPACE
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["admin-eks"])
 
@@ -689,3 +693,131 @@ async def unassign_eks_from_employee(agent_id: str, emp_id: str, authorization: 
         pass
 
     return {"unassigned": True, "empId": emp_id}
+
+
+# =========================================================================
+# Gateway Proxy — reverse proxy to EKS agent's OpenClaw Gateway UI
+# =========================================================================
+
+@router.api_route(
+    "/api/v1/admin/eks/{agent_id}/gateway/{path:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+)
+async def proxy_eks_gateway(agent_id: str, path: str, request: Request,
+                            authorization: str = Header(default="")):
+    """Reverse proxy HTTP to an EKS agent's Gateway UI (port 18789).
+
+    Auth: admin JWT via header or auth_token query param.  On first request
+    a cookie is set so sub-resource loads (CSS/JS/images) authenticate
+    automatically.
+
+    The admin console pod reaches the agent via in-cluster Service DNS:
+      http://{agent_name}.openclaw.svc:18789/{path}
+    Gateway auth mode is "none" for EKS instances (set in CRD config).
+    """
+    # Accept JWT from header, query param, or cookie
+    qt = request.query_params.get("auth_token", "")
+    cookie_token = request.cookies.get("eks_gw_session", "")
+    effective_auth = authorization or (f"Bearer {qt}" if qt else "") or (f"Bearer {cookie_token}" if cookie_token else "")
+    require_role(effective_auth, roles=["admin"])
+
+    from services.k8s_client import _sanitize_k8s_name
+    safe_name = _sanitize_k8s_name(agent_id)
+    target_base = f"http://{safe_name}.{OPENCLAW_NAMESPACE}.svc:18789"
+    target = f"{target_base}/{path}"
+
+    # Forward query params (strip auth_token)
+    filtered = {k: v for k, v in request.query_params.items() if k != "auth_token"}
+    if filtered:
+        from urllib.parse import urlencode
+        target += ("&" if "?" in target else "?") + urlencode(filtered)
+
+    try:
+        body = await request.body()
+        headers = {
+            "Content-Type": request.headers.get("content-type", "application/json"),
+            "Accept": request.headers.get("accept", "*/*"),
+        }
+        resp = _requests.request(
+            method=request.method, url=target, headers=headers,
+            data=body if body else None, timeout=(3, 15), allow_redirects=False,
+        )
+
+        excluded = {"transfer-encoding", "content-encoding", "connection"}
+        resp_headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded}
+
+        response = Response(
+            content=resp.content, status_code=resp.status_code,
+            headers=resp_headers, media_type=resp.headers.get("content-type"),
+        )
+
+        # Set cookie on first request so sub-resources authenticate
+        if qt:
+            response.set_cookie(
+                key="eks_gw_session", value=qt,
+                max_age=3600, httponly=True, samesite="lax",
+                path=f"/api/v1/admin/eks/{agent_id}/gateway/",
+            )
+        return response
+
+    except _requests.exceptions.ConnectionError:
+        raise HTTPException(502, "Agent gateway not reachable — pod may be starting.")
+    except _requests.exceptions.Timeout:
+        raise HTTPException(504, "Agent gateway timed out")
+    except Exception as e:
+        raise HTTPException(502, f"Gateway proxy error: {e}")
+
+
+@router.websocket("/api/v1/admin/eks/{agent_id}/gateway/{path:path}")
+async def proxy_eks_gateway_ws(websocket: WebSocket, agent_id: str, path: str):
+    """WebSocket proxy to an EKS agent's Gateway (for live terminal, chat).
+    Authenticates via eks_gw_session cookie set by the HTTP proxy."""
+    cookie_token = websocket.cookies.get("eks_gw_session", "")
+    if not cookie_token:
+        await websocket.close(code=4001, reason="Missing auth cookie")
+        return
+    try:
+        require_role(f"Bearer {cookie_token}", roles=["admin"])
+    except Exception:
+        await websocket.close(code=4001, reason="Invalid auth")
+        return
+
+    from services.k8s_client import _sanitize_k8s_name
+    safe_name = _sanitize_k8s_name(agent_id)
+    ws_target = f"ws://{safe_name}.{OPENCLAW_NAMESPACE}.svc:18789/{path}"
+
+    # Forward query params
+    qs = str(websocket.query_params)
+    if qs:
+        ws_target += "?" + qs
+
+    await websocket.accept()
+    try:
+        import websockets
+        async with websockets.connect(ws_target, open_timeout=5, close_timeout=3) as upstream:
+            async def client_to_upstream():
+                try:
+                    while True:
+                        data = await websocket.receive_text()
+                        await upstream.send(data)
+                except WebSocketDisconnect:
+                    pass
+
+            async def upstream_to_client():
+                try:
+                    async for msg in upstream:
+                        if isinstance(msg, str):
+                            await websocket.send_text(msg)
+                        else:
+                            await websocket.send_bytes(msg)
+                except Exception:
+                    pass
+
+            await asyncio.gather(client_to_upstream(), upstream_to_client())
+    except Exception as e:
+        logger.warning("EKS gateway WS proxy error for %s: %s", agent_id, e)
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass

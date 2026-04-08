@@ -5,3 +5,4 @@ requests>=2.31.0
 python-multipart>=0.0.9
 pyjwt>=2.8.0
 kubernetes-asyncio>=30.0.0
+websockets>=12.0

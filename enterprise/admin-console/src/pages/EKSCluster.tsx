@@ -5,7 +5,7 @@
 import { useState } from 'react';
 import {
   Cloud, Server, RefreshCw, Link2, Unlink, Download, Plus,
-  Square, RotateCw, Terminal,
+  Square, RotateCw, Terminal, ExternalLink,
   Loader2, AlertTriangle, Box,
 } from 'lucide-react';
 import { Card, StatCard, Badge, Button, Table, Modal, Input, Select, Toggle } from '../components/ui';
@@ -290,6 +290,15 @@ export function EksInstancesTab({ agents }: { agents?: Agent[] }) {
             )},
             { key: 'actions', label: 'Actions', render: (i: any) => (
               <div className="flex gap-1.5">
+                {i.phase === 'Running' && (
+                  <button onClick={() => {
+                    const token = (window as any).__openclaw_token || localStorage.getItem('openclaw_token');
+                    window.open(`/api/v1/admin/eks/${i.name}/gateway/?auth_token=${token}`, '_blank');
+                  }} title="Open Gateway"
+                    className="p-1.5 rounded-lg hover:bg-dark-hover text-text-muted hover:text-success transition-colors">
+                    <ExternalLink size={14} />
+                  </button>
+                )}
                 <button onClick={() => reloadAgent.mutate({ agentId: i.name })} title="Reload"
                   className="p-1.5 rounded-lg hover:bg-dark-hover text-text-muted hover:text-primary transition-colors">
                   <RotateCw size={14} />
