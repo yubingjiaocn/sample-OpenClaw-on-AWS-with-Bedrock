@@ -1,39 +1,191 @@
-# Deploying Admin Console on EKS
+# Deploying OpenClaw on Amazon EKS
 
-Deploy the OpenClaw Enterprise Admin Console to an existing Amazon EKS cluster. This runs the control panel (React + FastAPI) as a Kubernetes pod with Pod Identity for AWS access.
+Deploy the OpenClaw Enterprise Admin Console and AI agent instances to Amazon EKS. Supports both **AWS Global** regions (us-west-2, us-east-1, etc.) and **AWS China** regions (cn-northwest-1, cn-north-1).
 
 ---
 
 ## Prerequisites
 
+### All Regions
+
 | Requirement | Version | Check |
 |-------------|---------|-------|
 | AWS CLI | >= 2.27 | `aws --version` |
 | kubectl | >= 1.28 | `kubectl version --client` |
+| Terraform | >= 1.3 | `terraform --version` |
 | Docker | >= 20.0 | `docker --version` |
 | Node.js | >= 22 | `node --version` |
-| Python | >= 3.10 | `python3 --version` |
-| EKS cluster | Running, with `eks-pod-identity-agent` addon | `aws eks list-addons --cluster-name NAME` |
+| Helm | >= 3.12 | `helm version` |
 
 ### EKS Pod Identity Agent
 
-The deploy script uses [EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html) (not IRSA) for IAM access. Verify the addon is installed:
+Both deploy methods use [EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html) (not IRSA) for AWS access. Verify or install:
 
 ```bash
-aws eks describe-addon --cluster-name YOUR_CLUSTER --addon-name eks-pod-identity-agent --region us-west-2
+# Check if installed
+aws eks describe-addon --cluster-name YOUR_CLUSTER --addon-name eks-pod-identity-agent --region REGION
+
+# Install if missing
+aws eks create-addon --cluster-name YOUR_CLUSTER --addon-name eks-pod-identity-agent --region REGION
 ```
 
-If not installed:
+### China Region Additional Prerequisites
+
+AWS China regions (`cn-northwest-1`, `cn-north-1`) have network restrictions that require extra preparation:
+
+| Requirement | Why | How |
+|-------------|-----|-----|
+| **Image mirror to China ECR** | `ghcr.io` and Docker Hub are unreliable/blocked | Mirror images before deploying (see below) |
+| **Third-party model provider** | Amazon Bedrock is **not available** in China regions | Use LiteLLM proxy, or configure API keys for Anthropic/OpenAI/DeepSeek directly |
+| **AWS China account** | Separate partition (`aws-cn`) | Separate IAM credentials |
+| **AWS CLI profile** | China account needs its own profile | `aws configure --profile china` |
+
+#### Model provider for China
+
+Amazon Bedrock does not operate in AWS China regions. You have two options:
+
+1. **LiteLLM proxy** (recommended): Deploy LiteLLM on the same EKS cluster (`enable_litellm = true` in Terraform). LiteLLM provides an OpenAI-compatible endpoint that routes to any model provider. Configure the OpenClaw instance to use LiteLLM via `spec.config.raw`.
+
+2. **Direct API keys**: Pass API keys (e.g., `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`) via a Kubernetes Secret referenced in `spec.envFrom`. Configure the model in `spec.config.raw` to point to the provider's API endpoint.
+
+Example deploy with direct Anthropic API key (China):
+```bash
+# Create secret
+kubectl -n openclaw create secret generic model-api-keys \
+  --from-literal=ANTHROPIC_API_KEY=sk-ant-...
+
+# Deploy with envFrom referencing the secret (via API)
+curl -X POST .../deploy -d '{
+  "model": "anthropic/claude-sonnet-4-5-20250929",
+  "globalRegistry": "YOUR_CN_ECR",
+  "skills": []
+}'
+# Then patch the CRD to add envFrom:
+kubectl -n openclaw patch openclawinstance agent-helpdesk --type=merge \
+  -p '{"spec":{"envFrom":[{"secretRef":{"name":"model-api-keys"}}]}}'
+```
+
+#### Mirror container images to China ECR
+
+The OpenClaw Operator creates pods that pull images from `ghcr.io` and Docker Hub. These registries are inaccessible or very slow from China. You must mirror the images to your China ECR **before** deploying any OpenClaw instances.
 
 ```bash
-aws eks create-addon --cluster-name YOUR_CLUSTER --addon-name eks-pod-identity-agent --region us-west-2
+# Set variables
+CN_ACCOUNT=834204282212
+CN_REGION=cn-northwest-1
+CN_REGISTRY="${CN_ACCOUNT}.dkr.ecr.${CN_REGION}.amazonaws.com.cn"
+
+# Login to China ECR
+aws ecr get-login-password --region $CN_REGION --profile china \
+  | docker login --username AWS --password-stdin $CN_REGISTRY
+
+# Create repos (idempotent)
+for repo in openclaw/openclaw astral-sh/uv library/nginx otel/opentelemetry-collector; do
+  aws ecr create-repository --repository-name "$repo" --region $CN_REGION --profile china 2>/dev/null || true
+done
+
+# Pull from global, push to China
+declare -A IMAGES=(
+  ["ghcr.io/openclaw/openclaw:latest"]="openclaw/openclaw:latest"
+  ["ghcr.io/astral-sh/uv:0.6-bookworm-slim"]="astral-sh/uv:0.6-bookworm-slim"
+  ["nginx:1.27-alpine"]="library/nginx:1.27-alpine"
+  ["otel/opentelemetry-collector:0.120.0"]="otel/opentelemetry-collector:0.120.0"
+)
+for src in "${!IMAGES[@]}"; do
+  docker pull "$src"
+  docker tag "$src" "$CN_REGISTRY/${IMAGES[$src]}"
+  docker push "$CN_REGISTRY/${IMAGES[$src]}"
+done
+```
+
+> **Tip**: Run the image mirror from a machine with good global internet access (e.g., a global-region EC2 instance), then push to China ECR.
+
+---
+
+## Deploy Method 1: Terraform (Recommended)
+
+Creates the full stack: VPC, EKS cluster, EFS, OpenClaw Operator, Admin Console, and all supporting resources.
+
+### Step 1: Build images (before Terraform)
+
+Terraform creates the ECR repository and K8s deployment, but the Docker image must be built and pushed first. For China, this also mirrors all operator images.
+
+```bash
+# Global region
+bash eks/scripts/build-and-mirror.sh --region us-west-2 --name openclaw-prod
+
+# China region (also mirrors ALL operator images to China ECR)
+bash eks/scripts/build-and-mirror.sh --region cn-northwest-1 --name openclaw-cn --profile china
+```
+
+### Step 2: Terraform apply
+
+#### Global Region
+
+```bash
+cd eks/terraform
+terraform init
+
+terraform apply \
+  -var="name=openclaw-prod" \
+  -var="region=us-west-2" \
+  -var="architecture=arm64" \
+  -var="enable_efs=true" \
+  -var="enable_admin_console=true" \
+  -var="admin_password=YOUR_SECURE_PASSWORD"
+```
+
+#### China Region
+
+```bash
+cd eks/terraform
+
+# Use a separate workspace for China state isolation
+terraform workspace new china
+terraform init
+
+AWS_PROFILE=china terraform apply \
+  -var="name=openclaw-cn" \
+  -var="region=cn-northwest-1" \
+  -var="architecture=x86" \
+  -var="enable_efs=true" \
+  -var="enable_admin_console=true" \
+  -var="admin_password=YOUR_SECURE_PASSWORD"
+```
+
+Terraform automatically seeds DynamoDB with sample organization data and uploads SOUL templates to S3 on every apply (idempotent).
+
+### Terraform variables reference
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `name` | `openclaw-eks` | Cluster and resource name prefix |
+| `region` | `us-west-2` | AWS region (China auto-detected from `cn-` prefix) |
+| `architecture` | `arm64` | `arm64` (Graviton) or `x86` |
+| `enable_efs` | `true` | EFS for workspace persistence (set as default StorageClass) |
+| `enable_admin_console` | `false` | Deploy admin console (DynamoDB, S3, ECR, IAM, K8s) |
+| `admin_password` | `""` | Admin login password (required when admin console enabled) |
+| `enable_kata` | `false` | Kata Containers for Firecracker VM isolation |
+| `enable_monitoring` | `false` | Prometheus + Grafana monitoring stack |
+| `enable_litellm` | `false` | LiteLLM OpenAI-compatible proxy |
+
+### After Terraform apply
+
+If you need to update the admin console image after the initial deploy:
+
+```bash
+ECR_URI=$(cd eks/terraform && terraform output -raw admin_console_ecr)
+cd enterprise/admin-console && docker build -t $ECR_URI:latest . && docker push $ECR_URI:latest
+kubectl -n openclaw rollout restart deployment/admin-console
 ```
 
 ---
 
-## Option A: Standalone Deploy Script (No Terraform)
+## Deploy Method 2: Standalone Script (No Terraform)
 
-The fastest way to deploy — creates all required AWS resources and deploys to your EKS cluster in one command.
+Deploys to an **existing** EKS cluster. Creates only the admin console resources (no VPC/EKS).
+
+### Global Region
 
 ```bash
 cd enterprise/admin-console
@@ -44,18 +196,16 @@ bash deploy-eks.sh \
   --password YOUR_ADMIN_PASSWORD
 ```
 
-### What the script creates
+### China Region
 
-| Resource | Name | Purpose |
-|----------|------|---------|
-| ECR repository | `{stack}/admin-console` | Docker image storage |
-| DynamoDB table | `{stack}-enterprise` | All enterprise data (single-table) |
-| S3 bucket | `{stack}-workspaces-{account}` | SOUL templates, workspaces, knowledge |
-| IAM role | `{stack}-admin-console` | Pod Identity with DynamoDB/S3/SSM/EKS/ECR/CloudWatch |
-| SSM parameters | `/openclaw/{stack}/admin-password`, `jwt-secret` | Secrets |
-| K8s ServiceAccount | `admin-console` in `openclaw` namespace | Pod Identity binding |
-| K8s Deployment | `admin-console` | 1 replica, port 8099 |
-| K8s Service | `admin-console` (ClusterIP) | Internal access |
+```bash
+cd enterprise/admin-console
+
+AWS_PROFILE=china bash deploy-eks.sh \
+  --cluster openclaw-cn \
+  --region cn-northwest-1 \
+  --password YOUR_ADMIN_PASSWORD
+```
 
 ### Script flags
 
@@ -66,108 +216,133 @@ bash deploy-eks.sh \
 | `--namespace` | `openclaw` | Kubernetes namespace |
 | `--stack` | `openclaw-eks` | Resource name prefix |
 | `--password` | `admin123` | Admin console login password |
-| `--skip-build` | false | Skip Docker image build (use existing image) |
+| `--skip-build` | false | Skip Docker image build |
 | `--skip-seed` | false | Skip DynamoDB seed data |
-
-### After deployment
-
-```bash
-# Port-forward to access the console
-kubectl -n openclaw port-forward svc/admin-console 8099:8099
-
-# Open in browser
-open http://localhost:8099
-
-# Login with employee ID: emp-jiade, password: (your --password value)
-```
-
----
-
-## Option B: Terraform Module
-
-For infrastructure-as-code deployments, use the Terraform module at `eks/terraform/modules/admin-console/`.
-
-### Enable in terraform.tfvars
-
-```hcl
-enable_admin_console = true
-admin_password       = "YOUR_ADMIN_PASSWORD"
-```
-
-### Apply
-
-```bash
-cd eks/terraform
-terraform plan -var="admin_password=YOUR_ADMIN_PASSWORD"
-terraform apply -var="admin_password=YOUR_ADMIN_PASSWORD"
-```
 
 ### Resources created
 
-Same as Option A, plus the Terraform module manages the full lifecycle (create/update/destroy). The module uses `aws_eks_pod_identity_association` for IAM binding.
+| Resource | Name Pattern | Purpose |
+|----------|-------------|---------|
+| ECR repository | `{stack}/admin-console` | Docker image storage |
+| DynamoDB table | `{stack}-enterprise` | All enterprise data (single-table) |
+| S3 bucket | `{stack}-workspaces-{account}` | SOUL templates, workspaces, knowledge |
+| IAM role | `{stack}-admin-console` | Pod Identity (DynamoDB, S3, SSM, EKS, ECR, CloudWatch) |
+| SSM parameters | `/openclaw/{stack}/*` | Secrets (password, JWT) |
+| K8s resources | ServiceAccount, Deployment, Service, ClusterRole | Admin console pod |
 
-### Build and push the Docker image
+---
 
-Terraform creates the ECR repository but doesn't build the Docker image. Build and push manually:
+## Deploying OpenClaw Agent Instances
+
+Once the admin console is running, deploy AI agent instances via the UI or API.
+
+### Via UI
+
+1. Open the admin console: `kubectl -n openclaw port-forward svc/admin-console 8099:8099`
+2. Navigate to **Agent Factory** → **EKS** tab
+3. Click **Deploy Agent** → select agent, model, and infrastructure options
+4. For China: set **Global Registry** to your China ECR endpoint (e.g., `834204282212.dkr.ecr.cn-northwest-1.amazonaws.com.cn`)
+
+### Via API
 
 ```bash
-cd enterprise/admin-console
+# Global
+curl -X POST http://localhost:8099/api/v1/admin/eks/agent-helpdesk/deploy \
+  -H "Authorization: Bearer TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "bedrock/us.amazon.nova-2-lite-v1:0"}'
 
-# Get ECR URI from Terraform output
-ECR_URI=$(cd ../../eks/terraform && terraform output -raw admin_console_ecr)
-
-# Build and push
-aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin $ECR_URI
-docker build -t $ECR_URI:latest .
-docker push $ECR_URI:latest
-
-# Restart the deployment to pick up the new image
-kubectl -n openclaw rollout restart deployment/admin-console
+# China (with global registry override)
+curl -X POST http://localhost:8099/api/v1/admin/eks/agent-helpdesk/deploy \
+  -H "Authorization: Bearer TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "bedrock/us.amazon.nova-2-lite-v1:0",
+    "globalRegistry": "834204282212.dkr.ecr.cn-northwest-1.amazonaws.com.cn"
+  }'
 ```
+
+### Deploy API parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `model` | Nova 2 Lite | Bedrock model ID |
+| `image` | ghcr.io/openclaw/openclaw | Main container image (ECR URI for custom builds) |
+| `globalRegistry` | (none) | **Required for China**: rewrites registry for ALL images |
+| `storageClass` | cluster default | K8s StorageClass (`efs-sc` recommended) |
+| `storageSize` | `10Gi` | PVC size |
+| `cpuRequest` / `cpuLimit` | `500m` / `2` | CPU resources |
+| `memoryRequest` / `memoryLimit` | `2Gi` / `4Gi` | Memory resources |
+| `runtimeClass` | (none) | `kata-qemu` for Firecracker isolation |
+| `chromium` | `false` | Enable headless browser sidecar |
+| `backupSchedule` | (none) | Cron for S3 backups (e.g., `0 2 * * *`) |
+| `serviceType` | `ClusterIP` | K8s Service type |
+| `nodeSelector` | (none) | Node labels JSON (e.g., `{"gpu": "true"}`) |
+| `tolerations` | (none) | Tolerations JSON |
+
+---
+
+## Integration Test
+
+Run the integration test script to validate a deployment:
+
+```bash
+# Global
+bash eks/scripts/integration-test.sh \
+  --cluster openclaw-prod \
+  --region us-west-2 \
+  --password YOUR_PASSWORD
+
+# China (with registry)
+bash eks/scripts/integration-test.sh \
+  --cluster openclaw-cn \
+  --region cn-northwest-1 \
+  --password YOUR_PASSWORD \
+  --registry 834204282212.dkr.ecr.cn-northwest-1.amazonaws.com.cn
+```
+
+The test validates: login, operator status, instance deploy, pod startup, PVC storage class, registry override, reload, duplicate rejection, stop, and UI presence.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│  EKS Cluster                                     │
-│                                                   │
-│  ┌─────────────────────────────────────────────┐ │
-│  │  openclaw namespace                          │ │
-│  │                                               │ │
-│  │  ┌───────────────────┐  ┌────────────────┐  │ │
-│  │  │  admin-console    │  │  OpenClaw       │  │ │
-│  │  │  (FastAPI+React)  │  │  Instances      │  │ │
-│  │  │  port 8099        │──│  (CRD-managed)  │  │ │
-│  │  └────────┬──────────┘  └────────────────┘  │ │
-│  │           │ Pod Identity                      │ │
-│  └───────────┼───────────────────────────────────┘ │
-│              │                                     │
-│  ┌───────────┼───────────────────────────────────┐ │
-│  │  openclaw-operator-system                     │ │
-│  │  OpenClaw Operator (watches CRDs)             │ │
-│  └───────────────────────────────────────────────┘ │
-└──────────────┼─────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│  EKS Cluster                                         │
+│                                                       │
+│  ┌─────────────────────────────────────────────────┐ │
+│  │  openclaw namespace                              │ │
+│  │                                                   │ │
+│  │  ┌───────────────────┐  ┌──────────────────────┐│ │
+│  │  │  admin-console    │  │  OpenClawInstance     ││ │
+│  │  │  (FastAPI+React)  │  │  (operator-managed)   ││ │
+│  │  │  port 8099        │──│  StatefulSet+Service  ││ │
+│  │  │  Pod Identity     │  │  +PVC (EFS)           ││ │
+│  │  └────────┬──────────┘  └──────────────────────┘│ │
+│  └───────────┼──────────────────────────────────────┘ │
+│              │                                         │
+│  ┌───────────┼──────────────────────────────────────┐ │
+│  │  openclaw-operator-system                         │ │
+│  │  OpenClaw Operator (reconciles CRDs → K8s)        │ │
+│  └───────────────────────────────────────────────────┘ │
+└──────────────┼─────────────────────────────────────────┘
                │
     ┌──────────┴──────────┐
     │   AWS Services      │
-    │  DynamoDB  S3  SSM  │
-    │  ECR  EKS  CloudWatch│
+    │  Bedrock  DynamoDB  │
+    │  S3  SSM  ECR  EFS  │
     └─────────────────────┘
 ```
 
-### Three runtime backends
+### Runtime comparison
 
-The admin console manages agents across three runtimes:
-
-| Runtime | Backend | Status Source | Routing |
-|---------|---------|---------------|---------|
-| **Serverless** (default) | AgentCore microVM | CloudWatch logs | Tenant Router → AgentCore |
-| **ECS** | ECS Fargate task | ECS DescribeTasks | SSM endpoint → Fargate task |
-| **EKS** | K8s OpenClawInstance CRD | Pod status API | SSM endpoint → K8s Service |
-
-Agents are deployed to EKS by creating an `OpenClawInstance` CRD. The OpenClaw Operator watches for CRDs and creates the StatefulSet, Service, PVC, and ConfigMap.
+| Runtime | Isolation | Default Storage | Image Source |
+|---------|-----------|----------------|--------------|
+| **EKS Pods** | cgroups/namespaces | EFS | ghcr.io (global) / ECR mirror (China) |
+| **EKS + Kata** | Firecracker microVM | EFS | Same, with `runtimeClass: kata-qemu` |
+| **ECS Fargate** | Fargate microVM | EFS or S3 sync | Private ECR |
+| **AgentCore** | Firecracker microVM | Session Storage | Built-in |
 
 ---
 
@@ -175,88 +350,102 @@ Agents are deployed to EKS by creating an `OpenClawInstance` CRD. The OpenClaw O
 
 ### Compute Isolation
 
-Standard EKS pods share the host Linux kernel. While Kubernetes namespaces, cgroups, and NetworkPolicy provide strong isolation for most workloads, they offer a different security boundary than Firecracker microVMs:
+| Runtime | Kernel | Prompt injection risk |
+|---------|--------|----------------------|
+| AgentCore / ECS | Dedicated microVM | Container escape impossible |
+| **EKS Pods** | **Shared host kernel** | Kernel exploit theoretically possible |
+| EKS + Kata | Dedicated Firecracker VM | Container escape impossible |
 
-| Runtime | Isolation | Kernel | Prompt injection → escape? |
-|---------|-----------|--------|---------------------------|
-| AgentCore | Firecracker microVM | Dedicated | **Impossible** |
-| ECS Fargate | Fargate microVM | Dedicated | **Impossible** |
-| **EKS Pods** | **cgroups/namespaces** | **Shared with node** | **Kernel exploit theoretically possible** |
-| EKS + Kata | Firecracker microVM | Dedicated | **Impossible** |
-
-For production deployments requiring the same isolation guarantees as AgentCore, enable **Kata Containers** (`enable_kata = true` in Terraform). This runs each pod in its own Firecracker microVM on bare-metal nodes.
+For production with untrusted code execution, enable Kata Containers (`enable_kata = true`).
 
 ### Pod Identity vs IRSA
 
-This deployment uses [EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html) (not IRSA). Pod Identity is simpler — no OIDC provider needed, and the same role can be reused across clusters. The IAM role is scoped to:
+This deployment uses EKS Pod Identity (simpler than IRSA — no OIDC provider needed). IAM scope:
 
-- **DynamoDB**: Read/write to the enterprise table only
-- **S3**: Read/write to the workspace bucket only
+- **DynamoDB**: CRUD on enterprise table only
+- **S3**: Read/write on workspace bucket only
 - **SSM**: Parameters under `/openclaw/{stack}/*` only
 - **EKS**: `ListClusters`, `DescribeCluster` (read-only)
-- **ECR**: Pull images (read-only)
-- **CloudWatch Logs**: Read-only for agent status
-
-No `bedrock:InvokeModel` — agents call Bedrock via their own IRSA role, not the admin console's.
-
----
-
-## Seed Data
-
-The deploy script seeds DynamoDB with a sample organization:
-
-- 13 departments (Engineering, Sales, Finance, HR, Legal, etc.)
-- 10 positions with role-specific SOUL templates
-- 20 employees across all departments
-- Skills, knowledge bases, settings
-
-To re-seed an existing deployment:
-
-```bash
-cd enterprise/admin-console
-bash deploy-eks.sh --cluster dev-cluster --region us-west-2 --skip-build
-```
+- **ECR**: Image pull (read-only)
+- **No Bedrock access** — agents use their own IRSA role for model invocation
 
 ---
 
 ## Troubleshooting
 
-### Pod stuck in `CrashLoopBackOff`
+### Pod `ImagePullBackOff` (China)
+
+Images can't be pulled from ghcr.io/Docker Hub. Set `globalRegistry` when deploying instances:
 
 ```bash
-kubectl -n openclaw logs -l app=admin-console --tail=50
+# API
+curl -X POST .../deploy -d '{"globalRegistry": "YOUR_CN_ECR_REGISTRY"}'
+
+# Or set env var on admin console deployment
+kubectl -n openclaw set env deployment/admin-console OPENCLAW_REGISTRY=YOUR_CN_ECR_REGISTRY
 ```
 
-Common causes:
-- **Missing Python dependency**: Check `requirements.txt` includes all imports
-- **SSM unreachable**: Pod Identity not configured, or IAM role missing SSM permissions
-- **DynamoDB table not found**: Table name or region mismatch in env vars
+### Pod `Pending` (unbound PVC)
 
-### Pod Identity not working (403 on AWS API calls)
+No default StorageClass set. Terraform sets EFS as default. For manual clusters:
 
 ```bash
-# Verify association exists
-aws eks list-pod-identity-associations --cluster-name YOUR_CLUSTER --namespace openclaw --region us-west-2
+kubectl annotate storageclass efs-sc storageclass.kubernetes.io/is-default-class=true
+```
 
-# Verify addon is running
+### Operator not detected
+
+The admin console checks for deployments named `openclaw-operator` or `openclaw-operator-controller-manager`:
+
+```bash
+kubectl get deployment -n openclaw-operator-system
+```
+
+### Pod Identity 403
+
+```bash
+# Verify addon
 kubectl get pods -n kube-system -l app.kubernetes.io/name=eks-pod-identity-agent
+
+# Verify association
+aws eks list-pod-identity-associations --cluster-name CLUSTER --namespace openclaw --region REGION
 ```
 
-### Cannot discover EKS clusters (Settings → EKS tab)
+### Admin console K8s API 403
 
-The IAM role needs `eks:ListClusters` and `eks:DescribeCluster` permissions. The deploy script grants these by default.
-
-### OpenClaw Operator not found
-
-Check if the operator is installed:
+The admin console ServiceAccount needs a ClusterRole. Terraform creates this automatically. For manual deploys, apply the RBAC:
 
 ```bash
-kubectl get pods -n openclaw-operator-system
-```
-
-Install via the admin console UI (Settings → EKS → Install Operator) or via Helm:
-
-```bash
-helm install openclaw-operator oci://ghcr.io/openclaw-rocks/charts/openclaw-operator \
-  --namespace openclaw-operator-system --create-namespace
+kubectl apply -f - <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: admin-console
+rules:
+  - apiGroups: ["openclaw.rocks"]
+    resources: ["openclawinstances", "openclawselfconfigs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "serviceaccounts", "namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: admin-console
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: admin-console
+subjects:
+  - kind: ServiceAccount
+    name: admin-console
+    namespace: openclaw
+EOF
 ```
