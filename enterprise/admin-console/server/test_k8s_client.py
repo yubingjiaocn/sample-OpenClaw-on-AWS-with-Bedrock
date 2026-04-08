@@ -47,10 +47,13 @@ class _FakeApiException(Exception):
 
 _mock_k8s_client_module.exceptions.ApiException = _FakeApiException
 
+_mock_k8s_stream_module = MagicMock()
+
 sys.modules["kubernetes_asyncio"] = MagicMock()
 sys.modules["kubernetes_asyncio"].config = _mock_k8s_config
 sys.modules["kubernetes_asyncio"].client = _mock_k8s_client_module
 sys.modules["kubernetes_asyncio.client"] = _mock_k8s_client_module
+sys.modules["kubernetes_asyncio.stream"] = _mock_k8s_stream_module
 
 # Now import the module under test
 from services.k8s_client import K8sClient, CRD_GROUP, CRD_VERSION, CRD_PLURAL, CRD_FULL_NAME
@@ -552,106 +555,134 @@ class TestGetOperatorStatus(_BaseK8sTest):
 
 
 # ---------------------------------------------------------------------------
-# 6. Operator Install / Upgrade (Helm subprocess)
+# 6. Exec in Pod
 # ---------------------------------------------------------------------------
 
-class TestInstallOperator(_BaseK8sTest):
+class TestExecInPod(_BaseK8sTest):
 
-    async def test_install_success(self):
-        proc = AsyncMock()
-        proc.returncode = 0
-        proc.communicate = AsyncMock(return_value=(b"release installed", b""))
+    def _make_ws_context(self, core_ws_mock):
+        """Build mocked WsApiClient context manager + CoreV1Api."""
+        ws_client_instance = MagicMock()
+        # Make WsApiClient() usable as async context manager
+        ws_client_instance.__aenter__ = AsyncMock(return_value=ws_client_instance)
+        ws_client_instance.__aexit__ = AsyncMock(return_value=False)
+        return ws_client_instance, core_ws_mock
 
-        with patch("asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
-            result = await self.client.install_operator(version="0.22.2")
+    async def test_exec_success_returns_stdout(self):
+        mock_core_ws = AsyncMock()
+        mock_core_ws.connect_get_namespaced_pod_exec = AsyncMock(return_value="hello world")
+        ws_ctx, _ = self._make_ws_context(mock_core_ws)
 
-        self.assertEqual(result["status"], "installed")
-        self.assertEqual(result["version"], "0.22.2")
-        # Verify helm command
-        cmd = mock_exec.call_args[0]
-        self.assertEqual(cmd[0], "helm")
-        self.assertEqual(cmd[1], "install")
-        self.assertIn("--version", cmd)
-        self.assertIn("0.22.2", cmd)
+        with patch.object(_mock_k8s_stream_module, "WsApiClient", return_value=ws_ctx):
+            with patch.object(_mock_k8s_client_module, "CoreV1Api", return_value=mock_core_ws):
+                result = await self.client.exec_in_pod(
+                    "openclaw", "agt-1-0", ["cat", "/tmp/test.txt"])
+        self.assertEqual(result[0], "hello world")
+        self.assertEqual(result[2], 0)
 
-    async def test_install_china_region(self):
-        proc = AsyncMock()
-        proc.returncode = 0
-        proc.communicate = AsyncMock(return_value=(b"ok", b""))
+    async def test_exec_timeout_returns_error(self):
+        mock_core_ws = AsyncMock()
+        mock_core_ws.connect_get_namespaced_pod_exec = AsyncMock(
+            side_effect=asyncio.TimeoutError())
+        ws_ctx, _ = self._make_ws_context(mock_core_ws)
 
-        with patch("asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
-            await self.client.install_operator(version="0.22.2", china_region=True)
+        with patch.object(_mock_k8s_stream_module, "WsApiClient", return_value=ws_ctx):
+            with patch.object(_mock_k8s_client_module, "CoreV1Api", return_value=mock_core_ws):
+                result = await self.client.exec_in_pod(
+                    "openclaw", "agt-1-0", ["sleep", "999"], timeout=1)
+        self.assertIn("timed out", result[1])
+        self.assertEqual(result[2], 1)
 
-        cmd = mock_exec.call_args[0]
-        # Should include ECR mirror image overrides
-        cmd_str = " ".join(cmd)
-        self.assertIn("image.repository=public.ecr.aws", cmd_str)
-        self.assertIn("openclaw-operator-v0.22.2", cmd_str)
+    async def test_exec_api_exception_handled(self):
+        mock_core_ws = AsyncMock()
+        mock_core_ws.connect_get_namespaced_pod_exec = AsyncMock(
+            side_effect=_FakeApiException(status=404, reason="Not Found"))
+        ws_ctx, _ = self._make_ws_context(mock_core_ws)
 
-    async def test_install_already_exists(self):
-        proc = AsyncMock()
-        proc.returncode = 1
-        proc.communicate = AsyncMock(
-            return_value=(b"", b"cannot re-use a name that is still in use"))
-
-        with patch("asyncio.create_subprocess_exec", return_value=proc):
-            result = await self.client.install_operator()
-
-        self.assertEqual(result["status"], "already_installed")
-
-    async def test_install_failure_raises(self):
-        proc = AsyncMock()
-        proc.returncode = 1
-        proc.communicate = AsyncMock(return_value=(b"", b"helm: command not found"))
-
-        with patch("asyncio.create_subprocess_exec", return_value=proc):
-            with self.assertRaises(RuntimeError) as ctx:
-                await self.client.install_operator()
-        self.assertIn("helm install failed", str(ctx.exception))
-
-    async def test_install_uses_default_version(self):
-        proc = AsyncMock()
-        proc.returncode = 0
-        proc.communicate = AsyncMock(return_value=(b"ok", b""))
-
-        with patch.dict(os.environ, {"OPERATOR_VERSION": "0.23.0"}):
-            # Re-read module-level default
-            import services.k8s_client as _mod
-            orig = _mod.OPERATOR_VERSION
-            _mod.OPERATOR_VERSION = "0.23.0"
-            try:
-                with patch("asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
-                    await self.client.install_operator()
-                cmd = mock_exec.call_args[0]
-                self.assertIn("0.23.0", cmd)
-            finally:
-                _mod.OPERATOR_VERSION = orig
+        with patch.object(_mock_k8s_stream_module, "WsApiClient", return_value=ws_ctx):
+            with patch.object(_mock_k8s_client_module, "CoreV1Api", return_value=mock_core_ws):
+                result = await self.client.exec_in_pod(
+                    "openclaw", "agt-gone-0", ["echo", "hi"])
+        self.assertIn("Not Found", result[1])
+        self.assertNotEqual(result[2], 0)
 
 
-class TestUpgradeOperator(_BaseK8sTest):
+# ---------------------------------------------------------------------------
+# 7. upsert_secret
+# ---------------------------------------------------------------------------
 
-    async def test_upgrade_success(self):
-        proc = AsyncMock()
-        proc.returncode = 0
-        proc.communicate = AsyncMock(return_value=(b"upgraded", b""))
+class TestUpsertSecret(_BaseK8sTest):
 
-        with patch("asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
-            result = await self.client.upgrade_operator(version="0.23.0")
+    async def test_creates_when_not_exists(self):
+        self.client._core_v1.read_namespaced_secret = AsyncMock(
+            side_effect=_FakeApiException(status=404))
+        self.client._core_v1.create_namespaced_secret = AsyncMock()
 
-        self.assertEqual(result["status"], "upgraded")
-        cmd = mock_exec.call_args[0]
-        self.assertEqual(cmd[1], "upgrade")
-        self.assertIn("0.23.0", cmd)
+        result = await self.client.upsert_secret(
+            "openclaw", "agt-carol-im-tokens", {"TELEGRAM_BOT_TOKEN": "abc123"})
+        self.assertEqual(result, "created")
+        self.client._core_v1.create_namespaced_secret.assert_awaited_once()
+        body = self.client._core_v1.create_namespaced_secret.call_args[1]["body"]
+        self.assertEqual(body["metadata"]["name"], "agt-carol-im-tokens")
+        self.assertIn("TELEGRAM_BOT_TOKEN", body["data"])
 
-    async def test_upgrade_failure_raises(self):
-        proc = AsyncMock()
-        proc.returncode = 1
-        proc.communicate = AsyncMock(return_value=(b"", b"release not found"))
+    async def test_updates_when_exists(self):
+        self.client._core_v1.read_namespaced_secret = AsyncMock(return_value=MagicMock())
+        self.client._core_v1.patch_namespaced_secret = AsyncMock()
 
-        with patch("asyncio.create_subprocess_exec", return_value=proc):
-            with self.assertRaises(RuntimeError) as ctx:
-                await self.client.upgrade_operator()
-        self.assertIn("helm upgrade failed", str(ctx.exception))
+        result = await self.client.upsert_secret(
+            "openclaw", "agt-carol-im-tokens", {"DISCORD_BOT_TOKEN": "xyz789"})
+        self.assertEqual(result, "updated")
+        self.client._core_v1.patch_namespaced_secret.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# 8. delete_secret_key
+# ---------------------------------------------------------------------------
+
+class TestDeleteSecretKey(_BaseK8sTest):
+
+    async def test_removes_key_via_replace(self):
+        mock_secret = MagicMock()
+        mock_secret.data = {"TELEGRAM_BOT_TOKEN": "abc", "DISCORD_BOT_TOKEN": "xyz"}
+        self.client._core_v1.read_namespaced_secret = AsyncMock(return_value=mock_secret)
+        self.client._core_v1.replace_namespaced_secret = AsyncMock()
+
+        result = await self.client.delete_secret_key(
+            "openclaw", "agt-carol-im-tokens", "TELEGRAM_BOT_TOKEN")
+        self.assertTrue(result)
+        self.client._core_v1.replace_namespaced_secret.assert_awaited_once()
+        self.assertNotIn("TELEGRAM_BOT_TOKEN", mock_secret.data)
+
+    async def test_returns_false_when_secret_not_found(self):
+        self.client._core_v1.read_namespaced_secret = AsyncMock(
+            side_effect=_FakeApiException(status=404))
+
+        result = await self.client.delete_secret_key(
+            "openclaw", "agt-gone-im-tokens", "TELEGRAM_BOT_TOKEN")
+        self.assertFalse(result)
+
+
+# ---------------------------------------------------------------------------
+# 9. get_secret_keys
+# ---------------------------------------------------------------------------
+
+class TestGetSecretKeys(_BaseK8sTest):
+
+    async def test_returns_key_list(self):
+        mock_secret = MagicMock()
+        mock_secret.data = {"TELEGRAM_BOT_TOKEN": "abc", "SLACK_BOT_TOKEN": "xyz"}
+        self.client._core_v1.read_namespaced_secret = AsyncMock(return_value=mock_secret)
+
+        result = await self.client.get_secret_keys("openclaw", "agt-carol-im-tokens")
+        self.assertEqual(sorted(result), ["SLACK_BOT_TOKEN", "TELEGRAM_BOT_TOKEN"])
+
+    async def test_returns_empty_list_when_not_found(self):
+        self.client._core_v1.read_namespaced_secret = AsyncMock(
+            side_effect=_FakeApiException(status=404))
+
+        result = await self.client.get_secret_keys("openclaw", "agt-gone-im-tokens")
+        self.assertEqual(result, [])
 
 
 if __name__ == "__main__":

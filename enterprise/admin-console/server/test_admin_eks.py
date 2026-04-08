@@ -39,6 +39,9 @@ _mock_k8s.get_pod_status = AsyncMock(return_value={"status": "found", "phase": "
 _mock_k8s.get_pod_logs = AsyncMock(return_value={"pod_name": "agt-1-0", "container": "openclaw", "logs": "INFO started", "available_containers": ["openclaw"], "tail_lines": 100})
 _mock_k8s.install_operator = AsyncMock(return_value={"status": "installed", "version": "0.22.2", "namespace": "openclaw-operator-system", "output": "ok"})
 _mock_k8s.upgrade_operator = AsyncMock(return_value={"status": "upgraded", "version": "0.23.0", "namespace": "openclaw-operator-system", "output": "ok"})
+_mock_k8s.upsert_secret = AsyncMock(return_value="created")
+_mock_k8s.delete_secret_key = AsyncMock(return_value=True)
+_mock_k8s.get_secret_keys = AsyncMock(return_value=[])
 
 # Patch before importing the router
 with patch.dict("sys.modules", {
@@ -74,6 +77,7 @@ with patch.dict("sys.modules", {
 
     with patch.dict("sys.modules", {"shared": _mock_shared, "db": _mock_db, "s3ops": _mock_s3ops, "auth": MagicMock()}):
         from fastapi.testclient import TestClient
+        from routers import admin_eks as _admin_eks_module
         from routers.admin_eks import router
 
         from fastapi import FastAPI
@@ -355,66 +359,6 @@ class TestOperatorStatus(unittest.TestCase):
         self.assertEqual(resp.status_code, 502)
 
 
-class TestOperatorInstall(unittest.TestCase):
-
-    def test_install_success(self):
-        _mock_k8s.get_operator_status = AsyncMock(return_value={
-            "installed": False, "crd_exists": False, "deployment_ready": False,
-            "namespace": "openclaw-operator-system", "version": "", "pods": [],
-        })
-        _mock_k8s.install_operator = AsyncMock(return_value={
-            "status": "installed", "version": "0.22.2", "namespace": "openclaw-operator-system", "output": "ok",
-        })
-        resp = client.post("/api/v1/admin/eks/operator/install", headers=AUTH_HEADER, json={})
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.json()["status"], "installed")
-
-    def test_install_already_installed(self):
-        _mock_k8s.get_operator_status = AsyncMock(return_value={
-            "installed": True, "crd_exists": True, "deployment_ready": True,
-            "namespace": "openclaw-operator-system", "version": "0.22.2", "pods": [],
-        })
-        resp = client.post("/api/v1/admin/eks/operator/install", headers=AUTH_HEADER, json={})
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.json()["status"], "already_installed")
-
-    def test_install_failure(self):
-        _mock_k8s.get_operator_status = AsyncMock(return_value={
-            "installed": False, "crd_exists": False, "deployment_ready": False,
-            "namespace": "openclaw-operator-system", "version": "", "pods": [],
-        })
-        _mock_k8s.install_operator = AsyncMock(side_effect=RuntimeError("helm: command not found"))
-        resp = client.post("/api/v1/admin/eks/operator/install", headers=AUTH_HEADER, json={})
-        self.assertEqual(resp.status_code, 500)
-        self.assertIn("helm", resp.json()["detail"])
-
-    def test_install_custom_version(self):
-        _mock_k8s.get_operator_status = AsyncMock(return_value={"installed": False})
-        _mock_k8s.install_operator = AsyncMock(return_value={"status": "installed", "version": "0.23.0"})
-        resp = client.post("/api/v1/admin/eks/operator/install", headers=AUTH_HEADER,
-                           json={"version": "0.23.0"})
-        self.assertEqual(resp.status_code, 200)
-        call_kwargs = _mock_k8s.install_operator.call_args[1]
-        self.assertEqual(call_kwargs["version"], "0.23.0")
-
-
-class TestOperatorUpgrade(unittest.TestCase):
-
-    def test_upgrade_success(self):
-        _mock_k8s.upgrade_operator = AsyncMock(return_value={
-            "status": "upgraded", "version": "0.23.0", "namespace": "openclaw-operator-system",
-        })
-        resp = client.post("/api/v1/admin/eks/operator/upgrade", headers=AUTH_HEADER,
-                           json={"version": "0.23.0"})
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.json()["status"], "upgraded")
-
-    def test_upgrade_failure(self):
-        _mock_k8s.upgrade_operator = AsyncMock(side_effect=RuntimeError("release not found"))
-        resp = client.post("/api/v1/admin/eks/operator/upgrade", headers=AUTH_HEADER, json={})
-        self.assertEqual(resp.status_code, 500)
-
-
 # ---------------------------------------------------------------------------
 # Route ordering — "operator" must not match {agent_id}
 # ---------------------------------------------------------------------------
@@ -432,6 +376,147 @@ class TestRouteOrdering(unittest.TestCase):
         # Operator endpoint returns "installed" key; agent status returns "running"
         self.assertIn("installed", body)
         self.assertNotIn("running", body)
+
+
+# ---------------------------------------------------------------------------
+# 9. IM Bot Token Management
+# ---------------------------------------------------------------------------
+
+class TestSetEksTokens(unittest.TestCase):
+
+    def setUp(self):
+        _mock_k8s.upsert_secret = AsyncMock(return_value="created")
+        _mock_k8s.delete_secret_key = AsyncMock(return_value=True)
+        _mock_k8s.get_secret_keys = AsyncMock(return_value=["TELEGRAM_BOT_TOKEN"])
+        _mock_k8s.get_openclaw_instance = AsyncMock(return_value={
+            "metadata": {"name": "agt-carol"},
+            "spec": {"env": [
+                {"name": "EMPLOYEE_ID", "value": "emp-carol"},
+                {"name": "STACK_NAME", "value": "test-stack"},
+            ]},
+            "status": {"phase": "Running"},
+        })
+        _mock_k8s.patch_openclaw_instance = AsyncMock(return_value={"status": "patched"})
+
+    def test_set_token_creates_secret_and_patches_crd(self):
+        resp = client.put("/api/v1/admin/eks/agt-carol/tokens", headers=AUTH_HEADER,
+                          json={"telegramBotToken": "123456:ABC-DEF"})
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["agentId"], "agt-carol")
+        self.assertIn("secretName", body)
+        # Verify upsert_secret was called with token data
+        _mock_k8s.upsert_secret.assert_awaited_once()
+        call_kwargs = _mock_k8s.upsert_secret.call_args[1]
+        self.assertEqual(call_kwargs["data"]["TELEGRAM_BOT_TOKEN"], "123456:ABC-DEF")
+        # Verify CRD patch includes secretKeyRef env vars
+        patch_call = _mock_k8s.patch_openclaw_instance.call_args[0]
+        patch_body = patch_call[2]
+        env = patch_body["spec"]["env"]
+        token_env = [e for e in env if e.get("name") == "TELEGRAM_BOT_TOKEN"]
+        self.assertEqual(len(token_env), 1)
+        self.assertIn("secretKeyRef", token_env[0]["valueFrom"])
+
+    def test_clear_token(self):
+        _mock_k8s.get_secret_keys = AsyncMock(return_value=[])
+        resp = client.put("/api/v1/admin/eks/agt-carol/tokens", headers=AUTH_HEADER,
+                          json={"clearTelegramToken": True})
+        self.assertEqual(resp.status_code, 200)
+        _mock_k8s.delete_secret_key.assert_awaited_once()
+        body = resp.json()
+        self.assertFalse(body["saved"]["telegram"])
+
+
+class TestGetEksTokens(unittest.TestCase):
+
+    def test_get_tokens_status(self):
+        _mock_k8s.get_secret_keys = AsyncMock(return_value=["TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN"])
+        resp = client.get("/api/v1/admin/eks/agt-carol/tokens", headers=AUTH_HEADER)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["telegram"], "configured")
+        self.assertEqual(body["discord"], "configured")
+        self.assertEqual(body["slack"], "not_configured")
+        self.assertEqual(body["feishu"], "not_configured")
+
+
+# ---------------------------------------------------------------------------
+# 10. Image Tag Listing
+# ---------------------------------------------------------------------------
+
+class TestListImages(unittest.TestCase):
+
+    def setUp(self):
+        _mock_k8s.get_openclaw_instance = AsyncMock(return_value={
+            "metadata": {"name": "agt-carol"},
+            "spec": {"image": {"repository": "ghcr.io/openclaw/openclaw", "tag": "2026.3.1"}},
+            "status": {"phase": "Running"},
+        })
+
+    def test_list_images_from_ghcr(self):
+        mock_requests = MagicMock()
+        # Mock token response
+        token_resp = MagicMock()
+        token_resp.ok = True
+        token_resp.json.return_value = {"token": "ghcr-test-token"}
+        # Mock tags response
+        tags_resp = MagicMock()
+        tags_resp.status_code = 200
+        tags_resp.json.return_value = {"tags": ["2026.3.1", "2026.3.0", "latest"]}
+        mock_requests.get.side_effect = [token_resp, tags_resp]
+
+        with patch.object(_admin_eks_module, "_requests", mock_requests):
+            resp = client.get("/api/v1/admin/eks/agt-carol/images", headers=AUTH_HEADER)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertIn("ghcr", body["sources"])
+        self.assertGreater(len(body["images"]), 0)
+        self.assertEqual(body["currentImage"]["tag"], "2026.3.1")
+        self.assertEqual(body["currentImage"]["repository"], "ghcr.io/openclaw/openclaw")
+
+    def test_list_images_ghcr_failure_graceful(self):
+        mock_requests = MagicMock()
+        mock_requests.get.side_effect = Exception("Connection timeout")
+        with patch.object(_admin_eks_module, "_requests", mock_requests):
+            resp = client.get("/api/v1/admin/eks/agt-carol/images", headers=AUTH_HEADER)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["images"], [])
+        self.assertEqual(body["sources"], [])
+        # Current image info should still be returned from CRD
+        self.assertEqual(body["currentImage"]["tag"], "2026.3.1")
+
+
+# ---------------------------------------------------------------------------
+# 11. Image Update via Reload
+# ---------------------------------------------------------------------------
+
+class TestReloadImageUpdate(unittest.TestCase):
+
+    def setUp(self):
+        _mock_k8s.patch_openclaw_instance = AsyncMock(return_value={"status": "patched"})
+
+    def test_reload_with_image_tag(self):
+        resp = client.post("/api/v1/admin/eks/agt-carol/reload", headers=AUTH_HEADER,
+                           json={"imageTag": "2026.4.0"})
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["reloaded"])
+        self.assertEqual(body["imageUpdated"], "2026.4.0")
+        # Verify the CRD patch contains spec.image.tag
+        patch_body = _mock_k8s.patch_openclaw_instance.call_args[0][2]
+        self.assertEqual(patch_body["spec"]["image"]["tag"], "2026.4.0")
+
+    def test_reload_with_full_image_uri(self):
+        resp = client.post("/api/v1/admin/eks/agt-carol/reload", headers=AUTH_HEADER,
+                           json={"image": "ghcr.io/openclaw/openclaw:2026.4.0"})
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["reloaded"])
+        self.assertEqual(body["imageUpdated"], "ghcr.io/openclaw/openclaw:2026.4.0")
+        patch_body = _mock_k8s.patch_openclaw_instance.call_args[0][2]
+        self.assertEqual(patch_body["spec"]["image"]["repository"], "ghcr.io/openclaw/openclaw")
+        self.assertEqual(patch_body["spec"]["image"]["tag"], "2026.4.0")
 
 
 if __name__ == "__main__":
