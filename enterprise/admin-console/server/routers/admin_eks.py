@@ -809,7 +809,12 @@ async def _proxy_eks_ws(websocket: WebSocket, agent_id: str, path: str = ""):
     await websocket.accept()
     try:
         import websockets
-        async with websockets.connect(ws_target, open_timeout=5, close_timeout=3) as upstream:
+        # Set Origin to match the upstream host so the gateway's allowedOrigins check passes
+        upstream_origin = f"http://{safe_name}.{OPENCLAW_NAMESPACE}.svc:18789"
+        async with websockets.connect(
+            ws_target, open_timeout=5, close_timeout=3,
+            additional_headers={"Origin": upstream_origin},
+        ) as upstream:
             async def client_to_upstream():
                 try:
                     while True:
