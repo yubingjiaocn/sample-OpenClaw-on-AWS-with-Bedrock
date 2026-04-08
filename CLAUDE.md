@@ -17,19 +17,21 @@ This is **not** an application codebase -- it is infrastructure-as-code (CloudFo
 │       └── deploy-moltbot-conversationally.md  # Kiro AI deployment guide (~1300 lines)
 ├── eks/                           # EKS deployment (Terraform + scripts)
 │   ├── terraform/                 # Terraform modules (VPC, EKS, operator, admin-console, etc.)
-│   ├── manifests/                 # K8s manifest examples
-│   └── scripts/                   # Install, cleanup, validate scripts
+│   ├── manifests/                 # K8s manifest examples (OpenClawInstance CRDs)
+│   └── scripts/                   # Install, cleanup, validate, integration-test, build-and-mirror
 ├── enterprise/                    # Enterprise platform (Admin Console, Agent Container, Gateway)
 │   ├── admin-console/             # React + FastAPI admin console
 │   │   ├── server/                # FastAPI backend (routers, services, db, s3ops)
 │   │   ├── src/                   # React frontend (pages, hooks, components)
+│   │   ├── chart/                 # Helm chart (SA, RBAC, Deployment, Service, Ingress)
 │   │   ├── Dockerfile             # Multi-stage build (Node + Python)
-│   │   └── deploy-eks.sh          # Standalone EKS deploy script
+│   │   └── deploy-eks.sh          # Standalone EKS deploy script (uses Helm chart)
 │   ├── agent-container/           # OpenClaw agent Docker image
 │   └── gateway/                   # Tenant Router, Bedrock H2 Proxy
 ├── images/                        # Screenshots for documentation
 ├── docs/
-│   └── DEPLOYMENT_EKS.md          # EKS deployment guide
+│   ├── DEPLOYMENT_EKS.md          # EKS deployment guide (English)
+│   └── DEPLOYMENT_EKS_CN.md       # EKS deployment guide (Chinese)
 ├── README.md                      # Primary documentation (English)
 ├── README_CN.md                   # Chinese documentation
 ├── DEPLOYMENT.md                  # Step-by-step deployment guide (EC2)

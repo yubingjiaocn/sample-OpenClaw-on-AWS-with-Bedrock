@@ -55,13 +55,17 @@ Every agent uses the same Docker image. Admin chooses the deployment mode per ag
 |-|---------|
 | **Cold start** | None — pod is always running |
 | **Operator-managed** | OpenClaw Operator watches `OpenClawInstance` CRDs → StatefulSet + Service + PVC |
-| **Persistence** | EFS/EBS-backed PVC — durable across pod restarts |
+| **Persistence** | EFS-backed PVC (default StorageClass) — durable across pod restarts |
 | **Cluster management** | Discover and associate EKS clusters from the Admin Console (Settings → EKS) |
-| **Best for** | Teams already running on Kubernetes, multi-cluster deployments, Graviton/GPU workloads |
+| **Internet access** | ALB Ingress (enabled by default in Terraform), custom domain + HTTPS via ACM |
+| **Helm chart** | Admin console packaged as Helm chart: ServiceAccount, RBAC, Deployment, Service, Ingress |
+| **China region** | `build-and-mirror.sh` mirrors operator images to China ECR; `globalRegistry` CRD field rewrites all image registries |
+| **Deploy API** | Full infra configuration: model, CPU/memory, storage, runtime class (Kata), chromium sidecar, backup, node selector, tolerations |
+| **Best for** | Teams already running on Kubernetes, multi-cluster deployments, Graviton/GPU workloads, AWS China regions |
 
-Admin selects deployment mode when creating an agent in **Agent Factory**. The Agent Factory shows all three runtime tabs (Serverless, ECS, EKS) with live instance status.
+Admin selects deployment mode when creating an agent in **Agent Factory**. The Agent Factory shows all three runtime tabs (Serverless, ECS, EKS) with live instance status. The EKS tab includes a **Deploy Agent** modal with all infrastructure configuration options.
 
-**[→ EKS Deployment Guide](docs/DEPLOYMENT_EKS.md)**
+**[→ EKS Deployment Guide (EN)](docs/DEPLOYMENT_EKS.md)** · **[→ EKS 部署指南 (中文)](docs/DEPLOYMENT_EKS_CN.md)**
 
 ---
 

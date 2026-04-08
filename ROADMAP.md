@@ -102,12 +102,19 @@ Target: **v1.0 by April 30, 2026** — production-ready multi-tenant OpenClaw pl
 - [x] K8s client service (`kubernetes-asyncio`): CRD CRUD, pod status/logs, operator management
 - [x] Admin EKS router: deploy/stop/reload/status/logs, cluster discover/associate, operator install/upgrade
 - [x] 3-tier tenant routing: ECS → EKS → AgentCore (serverless fallback)
-- [x] Frontend: EKS tab in Settings (cluster/operator) and Agent Factory (instances)
-- [x] Terraform module: DynamoDB, S3, ECR, IAM with Pod Identity
-- [x] Standalone `deploy-eks.sh` script (no Terraform required)
+- [x] Frontend: EKS tab in Settings (cluster/operator) and Agent Factory (instances + Deploy Agent modal)
+- [x] Terraform full-stack: VPC, EKS, EFS, ALB Controller, Operator, Admin Console, Ingress
+- [x] Helm chart packaging: ServiceAccount, RBAC, Deployment, Service, Ingress
+- [x] Deploy API: model, CPU/memory, storage, runtime class, chromium, backup, nodeSelector, tolerations
+- [x] Standalone `deploy-eks.sh` using Helm chart (includes RBAC automatically)
 - [x] Dockerfile for containerized deployment
-- [x] 73 unit tests (k8s_client, admin_eks router, routing)
-- [x] Deployed to dev-cluster (us-west-2)
+- [x] ALB Ingress for internet access (enabled by default in Terraform)
+- [x] China region support: `build-and-mirror.sh` mirrors images, `globalRegistry` CRD override
+- [x] Shared config with ECS: full `openclaw.json`, SOUL layers from S3, env vars
+- [x] Seed data in Terraform: `null_resource` with no-overwrite mode
+- [x] 70 unit tests (k8s_client, admin_eks router) + integration test script
+- [x] Tested: global (us-west-2) + China (cn-northwest-1) via Terraform
+- [x] Docs: DEPLOYMENT_EKS.md (EN) + DEPLOYMENT_EKS_CN.md (CN)
 
 ### Agent Orchestration
 - [ ] Agent-to-agent invocation via AgentCore session
