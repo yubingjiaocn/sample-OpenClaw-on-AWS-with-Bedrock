@@ -768,9 +768,8 @@ async def proxy_eks_gateway(agent_id: str, path: str, request: Request,
         raise HTTPException(502, f"Gateway proxy error: {e}")
 
 
-@router.websocket("/api/v1/admin/eks/{agent_id}/gateway/{path:path}")
-async def proxy_eks_gateway_ws(websocket: WebSocket, agent_id: str, path: str):
-    """WebSocket proxy to an EKS agent's Gateway (for live terminal, chat).
+async def _proxy_eks_ws(websocket: WebSocket, agent_id: str, path: str = ""):
+    """Shared WebSocket proxy logic for EKS gateway.
     Authenticates via eks_gw_session cookie set by the HTTP proxy."""
     cookie_token = websocket.cookies.get("eks_gw_session", "")
     if not cookie_token:
@@ -798,8 +797,11 @@ async def proxy_eks_gateway_ws(websocket: WebSocket, agent_id: str, path: str):
             async def client_to_upstream():
                 try:
                     while True:
-                        data = await websocket.receive_text()
-                        await upstream.send(data)
+                        msg = await websocket.receive()
+                        if "text" in msg:
+                            await upstream.send(msg["text"])
+                        elif "bytes" in msg and msg["bytes"]:
+                            await upstream.send(msg["bytes"])
                 except WebSocketDisconnect:
                     pass
 
@@ -821,3 +823,14 @@ async def proxy_eks_gateway_ws(websocket: WebSocket, agent_id: str, path: str):
             await websocket.close()
         except Exception:
             pass
+
+
+# Two routes needed: the gateway UI connects to the root path (no trailing segment)
+@router.websocket("/api/v1/admin/eks/{agent_id}/gateway")
+async def proxy_eks_gateway_ws_root(websocket: WebSocket, agent_id: str):
+    await _proxy_eks_ws(websocket, agent_id, "")
+
+
+@router.websocket("/api/v1/admin/eks/{agent_id}/gateway/{path:path}")
+async def proxy_eks_gateway_ws(websocket: WebSocket, agent_id: str, path: str):
+    await _proxy_eks_ws(websocket, agent_id, path)
