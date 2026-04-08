@@ -102,6 +102,7 @@ module "admin_console" {
   admin_password     = var.admin_password
   image_tag          = var.admin_console_image_tag
 
+  seed_demo_data          = var.seed_demo_data
   ingress_class           = var.admin_console_ingress_class
   ingress_host            = var.admin_console_ingress_host
   ingress_certificate_arn = var.admin_console_certificate_arn

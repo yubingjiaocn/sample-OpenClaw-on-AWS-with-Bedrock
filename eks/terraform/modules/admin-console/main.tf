@@ -305,14 +305,72 @@ resource "aws_eks_pod_identity_association" "admin_console" {
 }
 
 # -----------------------------------------------------------------------------
-# Seed Data — populates DynamoDB with sample org + uploads SOUL templates to S3
-# Runs once on initial creation. To re-seed: taint this resource.
-#   terraform taint 'module.admin_console[0].null_resource.seed_data'
+# Bootstrap: create admin user (always runs on first deploy)
+# This is the minimum required to login — just 1 employee + 1 department.
 # -----------------------------------------------------------------------------
-resource "null_resource" "seed_data" {
-  # Runs once on initial table creation. Seed scripts use condition_expression
-  # to skip existing records, so re-running (via taint) is safe.
-  #   terraform taint 'module.admin_console[0].null_resource.seed_data'
+resource "null_resource" "bootstrap_admin" {
+  triggers = {
+    table_arn = aws_dynamodb_table.enterprise.arn
+  }
+
+  provisioner "local-exec" {
+    environment = {
+      AWS_REGION = var.region
+    }
+    command = <<-EOT
+      echo "[bootstrap] Creating admin user in ${aws_dynamodb_table.enterprise.name}"
+      python3 -c "
+import boto3
+ddb = boto3.resource('dynamodb', region_name='${var.region}')
+table = ddb.Table('${aws_dynamodb_table.enterprise.name}')
+try:
+    table.put_item(
+        Item={
+            'PK': 'ORG#acme', 'SK': 'EMP#emp-admin',
+            'GSI1PK': 'TYPE#employee', 'GSI1SK': 'EMP#emp-admin',
+            'id': 'emp-admin', 'name': 'Admin',
+            'email': 'admin@example.com',
+            'department': 'IT', 'departmentId': 'dept-it',
+            'position': 'Platform Admin', 'positionId': 'pos-admin',
+            'role': 'admin', 'status': 'active',
+        },
+        ConditionExpression='attribute_not_exists(PK)',
+    )
+    print('[bootstrap] Admin user created: emp-admin')
+except table.meta.client.exceptions.ConditionalCheckFailedException:
+    print('[bootstrap] Admin user already exists, skipped')
+
+# Ensure department exists
+try:
+    table.put_item(
+        Item={
+            'PK': 'ORG#acme', 'SK': 'DEPT#dept-it',
+            'GSI1PK': 'TYPE#department', 'GSI1SK': 'DEPT#dept-it',
+            'id': 'dept-it', 'name': 'IT', 'parentId': '',
+        },
+        ConditionExpression='attribute_not_exists(PK)',
+    )
+except Exception:
+    pass
+"
+      echo "[bootstrap] Done"
+    EOT
+  }
+
+  depends_on = [
+    aws_dynamodb_table.enterprise,
+    aws_ssm_parameter.admin_password,
+  ]
+}
+
+# -----------------------------------------------------------------------------
+# Demo Data (optional) — sample org with 20 employees, SOUL templates, KBs
+# Only runs when seed_demo_data = true. Idempotent (won't overwrite existing).
+# To re-seed: terraform taint 'module.admin_console[0].null_resource.seed_demo'
+# -----------------------------------------------------------------------------
+resource "null_resource" "seed_demo" {
+  count = var.seed_demo_data ? 1 : 0
+
   triggers = {
     table_arn = aws_dynamodb_table.enterprise.arn
     bucket    = aws_s3_bucket.workspaces.id
@@ -321,30 +379,30 @@ resource "null_resource" "seed_data" {
   provisioner "local-exec" {
     working_dir = "${path.module}/../../../../enterprise/admin-console/server"
     environment = {
-      AWS_REGION   = var.region
+      AWS_REGION        = var.region
       SEED_NO_OVERWRITE = "1"
     }
     command = <<-EOT
-      echo "[seed] Seeding DynamoDB table: ${aws_dynamodb_table.enterprise.name} (skip existing)"
-      python3 seed_dynamodb.py   --table "${aws_dynamodb_table.enterprise.name}" --region "${var.region}" 2>/dev/null || echo "[seed] seed_dynamodb.py skipped"
-      python3 seed_roles.py      --table "${aws_dynamodb_table.enterprise.name}" --region "${var.region}" 2>/dev/null || echo "[seed] seed_roles.py skipped"
-      python3 seed_settings.py   --table "${aws_dynamodb_table.enterprise.name}" --region "${var.region}" 2>/dev/null || echo "[seed] seed_settings.py skipped"
-      python3 seed_knowledge_docs.py --bucket "${aws_s3_bucket.workspaces.id}" --region "${var.region}" 2>/dev/null || echo "[seed] seed_knowledge_docs.py skipped"
-      python3 seed_ssm_tenants.py --region "${var.region}" --stack "${local.stack_name}" 2>/dev/null || echo "[seed] seed_ssm_tenants.py skipped"
+      echo "[demo-seed] Seeding demo data into ${aws_dynamodb_table.enterprise.name} (skip existing)"
+      python3 seed_dynamodb.py   --table "${aws_dynamodb_table.enterprise.name}" --region "${var.region}" 2>/dev/null || echo "[demo-seed] seed_dynamodb.py skipped"
+      python3 seed_roles.py      --table "${aws_dynamodb_table.enterprise.name}" --region "${var.region}" 2>/dev/null || echo "[demo-seed] seed_roles.py skipped"
+      python3 seed_settings.py   --table "${aws_dynamodb_table.enterprise.name}" --region "${var.region}" 2>/dev/null || echo "[demo-seed] seed_settings.py skipped"
+      python3 seed_knowledge_docs.py --bucket "${aws_s3_bucket.workspaces.id}" --region "${var.region}" 2>/dev/null || echo "[demo-seed] seed_knowledge_docs.py skipped"
+      python3 seed_ssm_tenants.py --region "${var.region}" --stack "${local.stack_name}" 2>/dev/null || echo "[demo-seed] seed_ssm_tenants.py skipped"
 
-      echo "[seed] Uploading SOUL templates to S3 (no-overwrite)"
+      echo "[demo-seed] Uploading SOUL templates to S3"
       if [ -d "../server/soul-templates" ]; then
         aws s3 sync "../server/soul-templates/" "s3://${aws_s3_bucket.workspaces.id}/_shared/" \
           --region "${var.region}" --size-only --quiet
       fi
 
-      echo "[seed] Done"
+      echo "[demo-seed] Done"
     EOT
   }
 
   depends_on = [
     aws_dynamodb_table.enterprise,
     aws_s3_bucket.workspaces,
-    aws_ssm_parameter.admin_password,
+    null_resource.bootstrap_admin,
   ]
 }

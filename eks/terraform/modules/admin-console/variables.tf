@@ -53,6 +53,12 @@ variable "partition" {
   default     = "aws"
 }
 
+variable "seed_demo_data" {
+  description = "Seed DynamoDB with demo organization (20 employees, SOUL templates, KBs). Set false for production."
+  type        = bool
+  default     = false
+}
+
 variable "ingress_class" {
   description = "Ingress class name (e.g. alb for AWS LB Controller)"
   type        = string

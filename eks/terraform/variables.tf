@@ -137,6 +137,12 @@ variable "admin_password" {
   sensitive   = true
 }
 
+variable "seed_demo_data" {
+  description = "Seed DynamoDB with demo org (20 employees, SOUL templates, KBs). False for production."
+  type        = bool
+  default     = false
+}
+
 variable "admin_console_image_tag" {
   description = "Docker image tag for the admin console"
   type        = string
