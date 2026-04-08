@@ -143,7 +143,7 @@ export default function DeptTree() {
     const coverage = deptEmps.length > 0 ? Math.round((bound / deptEmps.length) * 100) : 0;
     const deptPositions = positions.filter(p => childIds.has(p.departmentId));
     const channels = new Set<string>();
-    deptEmps.forEach(e => e.channels.forEach(c => channels.add(c)));
+    deptEmps.forEach(e => (e.channels || []).forEach(c => channels.add(c)));
 
     return {
       ...dept,
@@ -242,9 +242,9 @@ export default function DeptTree() {
                 </div>
 
                 {/* Channels */}
-                {dept.channels.length > 0 && (
+                {(dept.channels || []).length > 0 && (
                   <div className="flex flex-wrap gap-1">
-                    {dept.channels.map(c => (
+                    {(dept.channels || []).map(c => (
                       <span key={c} className="text-[10px] px-1.5 py-0.5 rounded bg-dark-bg text-text-muted">{CHANNEL_LABELS[c as ChannelType]}</span>
                     ))}
                   </div>
@@ -453,11 +453,11 @@ export default function DeptTree() {
               </div>
 
               {/* Channels */}
-              {sel.channels.length > 0 && (
+              {(sel.channels || []).length > 0 && (
                 <div className="mt-6">
                   <h3 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">Active Channels</h3>
                   <div className="flex flex-wrap gap-2">
-                    {sel.channels.map(c => <Badge key={c} color="info">{CHANNEL_LABELS[c as ChannelType]}</Badge>)}
+                    {(sel.channels || []).map(c => <Badge key={c} color="info">{CHANNEL_LABELS[c as ChannelType]}</Badge>)}
                   </div>
                 </div>
               )}

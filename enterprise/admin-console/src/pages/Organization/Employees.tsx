@@ -166,7 +166,7 @@ export default function Employees() {
                     <td className="py-3"><Badge>{e.positionName}</Badge></td>
                     <td className="py-3">
                       <div className="flex items-center gap-1.5">
-                        {e.channels.map(c => {
+                        {(e.channels || []).map(c => {
                           const st = channelStatus[c] || 'offline';
                           return (
                             <div key={c} className="flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px]" style={{ backgroundColor: STATUS_COLORS[st] + '15', color: STATUS_COLORS[st] }}>
@@ -266,7 +266,7 @@ export default function Employees() {
               <div>
                 <p className="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">Channel Status</p>
                 <div className="flex flex-wrap gap-2">
-                  {selected.channels.map(c => {
+                  {(selected.channels || []).map(c => {
                     const st = channelStatus[c] || 'offline';
                     return (
                       <div key={c} className="flex items-center gap-2 rounded-lg bg-dark-bg px-3 py-2">
@@ -292,11 +292,11 @@ export default function Employees() {
                   </div>
                   <div className="grid grid-cols-3 gap-3 mt-3">
                     <div className="text-center">
-                      <p className="text-sm font-medium">{agent.skills.length}</p>
+                      <p className="text-sm font-medium">{(agent.skills || []).length}</p>
                       <p className="text-[10px] text-text-muted">Skills</p>
                     </div>
                     <div className="text-center">
-                      <p className="text-sm font-medium">{agent.channels.length}</p>
+                      <p className="text-sm font-medium">{(agent.channels || []).length}</p>
                       <p className="text-[10px] text-text-muted">Channels</p>
                     </div>
                     <div className="text-center">
@@ -393,8 +393,8 @@ export default function Employees() {
             <label className="block text-xs font-medium text-text-secondary mb-1.5">IM Channels</label>
             <div className="flex flex-wrap gap-2">
               {(['slack','discord','telegram','whatsapp','feishu','portal'] as ChannelType[]).map(ch => (
-                <button key={ch} onClick={() => setEditingEmp({ ...editingEmp, channels: (editingEmp.channels as string[]).includes(ch) ? editingEmp.channels.filter(c => c !== ch) : [...editingEmp.channels, ch] as ChannelType[] })}
-                  className={`rounded-lg px-3 py-1.5 text-xs font-medium border transition-colors ${(editingEmp.channels as string[]).includes(ch) ? 'bg-primary/10 border-primary/40 text-primary-light' : 'border-dark-border text-text-muted hover:border-text-muted'}`}>
+                <button key={ch} onClick={() => setEditingEmp({ ...editingEmp, channels: ((editingEmp.channels || []) as string[]).includes(ch) ? (editingEmp.channels || []).filter(c => c !== ch) : [...(editingEmp.channels || []), ch] as ChannelType[] })}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-medium border transition-colors ${((editingEmp.channels || []) as string[]).includes(ch) ? 'bg-primary/10 border-primary/40 text-primary-light' : 'border-dark-border text-text-muted hover:border-text-muted'}`}>
                   {CHANNEL_LABELS[ch]}
                 </button>
               ))}

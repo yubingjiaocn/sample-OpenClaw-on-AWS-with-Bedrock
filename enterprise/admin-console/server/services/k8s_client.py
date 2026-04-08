@@ -8,10 +8,18 @@ for the enterprise admin console. Operates on a single namespace
 
 import asyncio
 import os
+import re
 from typing import Optional
 
 from kubernetes_asyncio import client, config
 from kubernetes_asyncio.client import ApiClient
+
+
+def _sanitize_k8s_name(name: str) -> str:
+    """Sanitize a string into a valid RFC 1123 subdomain for K8s resource names."""
+    name = re.sub(r'[^a-z0-9.\-]', '-', name.lower())
+    name = re.sub(r'-{2,}', '-', name).strip('-.')
+    return name
 
 
 # CRD coordinates
@@ -122,6 +130,9 @@ class K8sClient:
             service_type: K8s Service type (ClusterIP, LoadBalancer, NodePort).
         """
         await self.initialize()
+        agent_name = _sanitize_k8s_name(agent_name)
+        if not agent_name:
+            raise ValueError("agent_name produces an empty K8s name after sanitization")
 
         stack = os.environ.get("STACK_NAME", "openclaw-multitenancy")
         s3_bucket = os.environ.get("S3_BUCKET", "")
@@ -302,6 +313,7 @@ class K8sClient:
     async def delete_openclaw_instance(self, namespace: str, agent_name: str) -> dict:
         """Delete an OpenClawInstance CRD."""
         await self.initialize()
+        agent_name = _sanitize_k8s_name(agent_name)
         try:
             await self._custom_objects.delete_namespaced_custom_object(
                 group=CRD_GROUP,
@@ -319,6 +331,7 @@ class K8sClient:
     async def patch_openclaw_instance(self, namespace: str, agent_name: str, patch: dict) -> dict:
         """Merge-patch an OpenClawInstance CRD (e.g. config update)."""
         await self.initialize()
+        agent_name = _sanitize_k8s_name(agent_name)
         try:
             await self._custom_objects.patch_namespaced_custom_object(
                 group=CRD_GROUP,
@@ -338,6 +351,7 @@ class K8sClient:
     async def get_openclaw_instance(self, namespace: str, agent_name: str) -> Optional[dict]:
         """Get an OpenClawInstance CRD."""
         await self.initialize()
+        agent_name = _sanitize_k8s_name(agent_name)
         try:
             return await self._custom_objects.get_namespaced_custom_object(
                 group=CRD_GROUP,
@@ -388,6 +402,7 @@ class K8sClient:
     async def get_pod_status(self, namespace: str, agent_name: str) -> dict:
         """Get pod status for an agent by label selector."""
         await self.initialize()
+        agent_name = _sanitize_k8s_name(agent_name)
         try:
             pods = await self._core_v1.list_namespaced_pod(
                 namespace=namespace,
@@ -432,6 +447,7 @@ class K8sClient:
     ) -> dict:
         """Get pod logs for an agent container."""
         await self.initialize()
+        agent_name = _sanitize_k8s_name(agent_name)
         try:
             pods = await self._core_v1.list_namespaced_pod(
                 namespace=namespace,

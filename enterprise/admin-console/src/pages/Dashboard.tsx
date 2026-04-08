@@ -271,7 +271,7 @@ export default function Dashboard() {
                     <div>
                       <p className="text-sm font-medium text-text-primary">{a.name}</p>
                       <p className="text-xs text-text-muted">
-                        {a.channels.map(c => CHANNEL_LABELS[c as ChannelType]).join(', ')}
+                        {(a.channels || []).map(c => CHANNEL_LABELS[c as ChannelType]).join(', ')}
                       </p>
                     </div>
                   </div>

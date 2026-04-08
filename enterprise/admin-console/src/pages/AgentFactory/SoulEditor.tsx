@@ -82,7 +82,7 @@ export default function SoulEditor() {
     <div>
       <PageHeader
         title={`SOUL Editor: ${agent.name}`}
-        description={`${agent.positionName} · ${agent.employeeName} · ${agent.channels.map(c => CHANNEL_LABELS[c as ChannelType]).join(', ')}`}
+        description={`${agent.positionName} · ${agent.employeeName} · ${(agent.channels || []).map(c => CHANNEL_LABELS[c as ChannelType]).join(', ')}`}
         actions={
           <div className="flex gap-3">
             <Button variant="default" onClick={() => navigate('/agents')}><ArrowLeft size={16} /> Back</Button>

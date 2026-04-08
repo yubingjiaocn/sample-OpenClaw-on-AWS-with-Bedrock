@@ -360,11 +360,11 @@ except table.meta.client.exceptions.ConditionalCheckFailedException:
     # User exists (maybe from demo seed) — ensure role=admin
     table.update_item(
         Key={'PK': 'ORG#acme', 'SK': 'EMP#emp-admin'},
-        UpdateExpression='SET #r = :role',
+        UpdateExpression='SET #r = :role, positionName = :pn, positionId = :pi, departmentName = :dn, departmentId = :di',
         ExpressionAttributeNames={'#r': 'role'},
-        ExpressionAttributeValues={':role': 'admin'},
+        ExpressionAttributeValues={':role': 'admin', ':pn': 'Platform Admin', ':pi': 'pos-admin', ':dn': 'IT', ':di': 'dept-it'},
     )
-    print('[bootstrap] Admin user exists, ensured role=admin')
+    print('[bootstrap] Admin user exists, ensured role + positionName + departmentName')
 
 # Ensure department exists
 try:

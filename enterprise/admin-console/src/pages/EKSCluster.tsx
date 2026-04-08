@@ -116,9 +116,11 @@ export function EksClusterTab() {
               <Button size="sm" onClick={() => refetch()}>
                 <RefreshCw size={14} /> Refresh
               </Button>
-              <Button size="sm" variant="danger" onClick={handleDisassociate}>
-                <Unlink size={14} /> Disassociate
-              </Button>
+              {!inCluster && (
+                <Button size="sm" variant="danger" onClick={handleDisassociate}>
+                  <Unlink size={14} /> Disassociate
+                </Button>
+              )}
             </div>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
