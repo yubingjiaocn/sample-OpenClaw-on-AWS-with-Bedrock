@@ -301,8 +301,10 @@ open http://localhost:8099
    - **Compute Resources**：CPU / 内存的请求值和上限
    - **Storage**：StorageClass 和大小
    - **Chromium**：启用无头浏览器 Sidecar
-   - **高级选项**：Runtime Class（Kata）、Service 类型、备份计划、节点选择器、容忍度
+   - **高级选项**：Runtime Class（Kata）、Service 类型、备份计划、节点选择器、容忍度、自定义配置（JSON）
 5. 点击 **Deploy**
+
+如需编辑运行中实例的配置，点击 EKS 实例表格中的 **齿轮图标**（⚙）。这将打开 JSON 编辑器，显示当前的 `spec.config.raw`。编辑后点击 **Save & Restart** 即可深度合并更改并重启 Pod。
 
 ### 通过 API
 
@@ -340,6 +342,97 @@ curl -X POST https://ALB地址/api/v1/admin/eks/agent-helpdesk/deploy \
 | `serviceType` | `ClusterIP` | K8s Service 类型 |
 | `nodeSelector` | （无） | 节点标签 JSON |
 | `tolerations` | （无） | 容忍度 JSON |
+| `configOverride` | （无） | 深度合并到 `spec.config.raw` 的 JSON 对象（见下文） |
+
+### 自定义配置注入
+
+`configOverride` 参数（部署和重载均可用）允许您覆盖 OpenClaw `openclaw.json` 配置的任何部分，无需构建自定义容器镜像。该 JSON 将**深度合并**到默认的 Bedrock 配置中 —— 未显式覆盖的现有配置会被保留。
+
+#### 使用场景
+
+- **自定义模型提供商** —— 使用 OpenAI 兼容 API、自托管模型或 LiteLLM 代理
+- **工具设置** —— 覆盖工具权限、执行策略或沙盒设置
+- **Agent 默认值** —— 自定义压缩设置、工作空间路径或启动行为
+- **Gateway 配置** —— 更改认证模式、允许的来源或控制台 UI 设置
+
+#### API 示例
+
+```bash
+# 部署时使用 OpenAI 兼容模型提供商
+curl -X POST https://ALB地址/api/v1/admin/eks/agent-helpdesk/deploy \
+  -H "Authorization: Bearer TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "bedrock/us.amazon.nova-2-lite-v1:0",
+    "configOverride": {
+      "models": {
+        "providers": {
+          "custom-openai": {
+            "baseUrl": "https://your-endpoint.com/v1",
+            "apiKey": "sk-...",
+            "models": [{ "id": "gpt-4o", "contextWindow": 128000, "maxTokens": 4096 }]
+          }
+        }
+      },
+      "agents": {
+        "defaults": {
+          "model": { "primary": "custom-openai/gpt-4o" }
+        }
+      }
+    }
+  }'
+
+# 更新运行中实例的配置（重载并覆盖）
+curl -X POST https://ALB地址/api/v1/admin/eks/agent-helpdesk/reload \
+  -H "Authorization: Bearer TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "configOverride": {
+      "agents": {
+        "defaults": {
+          "model": { "primary": "amazon-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0" }
+        }
+      }
+    }
+  }'
+
+# 读取当前配置
+curl https://ALB地址/api/v1/admin/eks/agent-helpdesk/config \
+  -H "Authorization: Bearer TOKEN"
+```
+
+#### LiteLLM 代理示例
+
+如果部署了可选的 LiteLLM 模块（Terraform 中 `enable_litellm = true`），可将 Agent 指向集群内 LiteLLM 端点：
+
+```json
+{
+  "configOverride": {
+    "models": {
+      "providers": {
+        "litellm": {
+          "baseUrl": "http://litellm.litellm.svc:4000/v1",
+          "apiKey": "not-needed",
+          "models": [
+            { "id": "bedrock/claude-sonnet", "contextWindow": 200000, "maxTokens": 8192 },
+            { "id": "bedrock/nova-pro", "contextWindow": 300000, "maxTokens": 5120 }
+          ]
+        }
+      }
+    },
+    "agents": {
+      "defaults": { "model": { "primary": "litellm/bedrock/claude-sonnet" } }
+    }
+  }
+}
+```
+
+#### 深度合并规则
+
+- **字典值**递归合并（基础配置和覆盖配置的键均会保留）
+- **列表值**由覆盖配置完全替换（不追加）
+- **标量值**由覆盖配置替换
+- 除非显式覆盖，原始 Bedrock 提供商配置将被保留
 
 ---
 

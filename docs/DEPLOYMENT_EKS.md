@@ -301,8 +301,10 @@ Once the admin console is running, deploy AI agent instances via the UI or API.
    - **Compute Resources**: CPU/memory requests and limits
    - **Storage**: StorageClass and size
    - **Chromium**: Enable headless browser sidecar
-   - **Advanced**: Runtime class (Kata), service type, backup schedule, node selector, tolerations
+   - **Advanced**: Runtime class (Kata), service type, backup schedule, node selector, tolerations, config override (JSON)
 5. Click **Deploy**
+
+To edit a running instance's config, click the **gear icon** (⚙) in the EKS instances table. This opens a JSON editor showing the current `spec.config.raw`. Edit and click **Save & Restart** to deep-merge your changes and restart the pod.
 
 ### Via API
 
@@ -340,6 +342,97 @@ curl -X POST https://ADMIN_ALB_URL/api/v1/admin/eks/agent-helpdesk/deploy \
 | `serviceType` | `ClusterIP` | K8s Service type (`ClusterIP`, `LoadBalancer`, `NodePort`) |
 | `nodeSelector` | (none) | Node labels JSON (e.g., `{"gpu": "true"}`) |
 | `tolerations` | (none) | Tolerations JSON (e.g., `[{"key":"kata","value":"true","effect":"NoSchedule"}]`) |
+| `configOverride` | (none) | JSON object deep-merged into `spec.config.raw` (see below) |
+
+### Custom Config Injection
+
+The `configOverride` parameter (available on both deploy and reload) lets you override any part of the OpenClaw `openclaw.json` configuration without building custom container images. The JSON is **deep-merged** into the default Bedrock config — existing keys are preserved unless explicitly overridden.
+
+#### Use cases
+
+- **Custom model providers** — Use OpenAI-compatible APIs, self-hosted models, or LiteLLM proxy
+- **Tool settings** — Override tool permissions, execution policies, or sandbox settings
+- **Agent defaults** — Custom compaction settings, workspace paths, or bootstrap behavior
+- **Gateway config** — Change auth mode, allowed origins, or control UI settings
+
+#### API examples
+
+```bash
+# Deploy with an OpenAI-compatible model provider
+curl -X POST https://ADMIN_ALB_URL/api/v1/admin/eks/agent-helpdesk/deploy \
+  -H "Authorization: Bearer TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "bedrock/us.amazon.nova-2-lite-v1:0",
+    "configOverride": {
+      "models": {
+        "providers": {
+          "custom-openai": {
+            "baseUrl": "https://your-endpoint.com/v1",
+            "apiKey": "sk-...",
+            "models": [{ "id": "gpt-4o", "contextWindow": 128000, "maxTokens": 4096 }]
+          }
+        }
+      },
+      "agents": {
+        "defaults": {
+          "model": { "primary": "custom-openai/gpt-4o" }
+        }
+      }
+    }
+  }'
+
+# Update a running instance's config (reload with override)
+curl -X POST https://ADMIN_ALB_URL/api/v1/admin/eks/agent-helpdesk/reload \
+  -H "Authorization: Bearer TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "configOverride": {
+      "agents": {
+        "defaults": {
+          "model": { "primary": "amazon-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0" }
+        }
+      }
+    }
+  }'
+
+# Read current config
+curl https://ADMIN_ALB_URL/api/v1/admin/eks/agent-helpdesk/config \
+  -H "Authorization: Bearer TOKEN"
+```
+
+#### LiteLLM proxy example
+
+If you deployed the optional LiteLLM module (`enable_litellm = true` in Terraform), point agents to the in-cluster LiteLLM endpoint:
+
+```json
+{
+  "configOverride": {
+    "models": {
+      "providers": {
+        "litellm": {
+          "baseUrl": "http://litellm.litellm.svc:4000/v1",
+          "apiKey": "not-needed",
+          "models": [
+            { "id": "bedrock/claude-sonnet", "contextWindow": 200000, "maxTokens": 8192 },
+            { "id": "bedrock/nova-pro", "contextWindow": 300000, "maxTokens": 5120 }
+          ]
+        }
+      }
+    },
+    "agents": {
+      "defaults": { "model": { "primary": "litellm/bedrock/claude-sonnet" } }
+    }
+  }
+}
+```
+
+#### How deep-merge works
+
+- **Dict values** merge recursively (both base and override keys are preserved)
+- **List values** in the override replace the base entirely (no append)
+- **Scalar values** in the override replace the base
+- The original Bedrock provider config is preserved unless you explicitly override it
 
 ---
 
