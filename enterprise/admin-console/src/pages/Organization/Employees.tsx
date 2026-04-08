@@ -80,7 +80,7 @@ export default function Employees() {
   }).length;
 
   const filtered = EMPLOYEES.filter(e => {
-    if (filterText && !e.name.toLowerCase().includes(filterText.toLowerCase()) && !e.positionName.toLowerCase().includes(filterText.toLowerCase())) return false;
+    if (filterText && !e.name.toLowerCase().includes(filterText.toLowerCase()) && !(e.positionName || '').toLowerCase().includes(filterText.toLowerCase())) return false;
     if (filterDept !== 'all' && e.departmentName !== filterDept) return false;
     if (filterStatus === 'bound' && !e.agentId) return false;
     if (filterStatus === 'unbound' && e.agentId) return false;

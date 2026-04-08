@@ -51,7 +51,7 @@ export default function AgentList() {
   const [newPos, setNewPos] = useState('');
   const [newEmp, setNewEmp] = useState('');
   const [newChannels, setNewChannels] = useState<string[]>(['discord']);
-  const [newDeployMode, setNewDeployMode] = useState<'serverless' | 'always-on-ecs'>('serverless');
+  const [newDeployMode, setNewDeployMode] = useState<'serverless' | 'always-on-ecs' | 'eks'>('serverless');
   const [filterText, setFilterText] = useState('');
   const [filterDept, setFilterDept] = useState('all');
   const [filterStatus, setFilterStatus] = useState('all');
@@ -80,7 +80,7 @@ export default function AgentList() {
   const deptOptions = [{ label: 'All Positions', value: 'all' }, ...Array.from(deptSet).map(d => ({ label: d, value: d }))];
 
   const filtered = currentList.filter(a => {
-    const matchText = !filterText || a.name.toLowerCase().includes(filterText.toLowerCase()) || (a.employeeName || '').toLowerCase().includes(filterText.toLowerCase()) || a.positionName.toLowerCase().includes(filterText.toLowerCase());
+    const matchText = !filterText || a.name.toLowerCase().includes(filterText.toLowerCase()) || (a.employeeName || '').toLowerCase().includes(filterText.toLowerCase()) || (a.positionName || '').toLowerCase().includes(filterText.toLowerCase());
     const matchDept = filterDept === 'all' || a.positionName === filterDept;
     const matchStatus = filterStatus === 'all' || a.status === filterStatus;
     return matchText && matchDept && matchStatus;
@@ -395,20 +395,27 @@ export default function AgentList() {
             <Input label="Agent Name" value={newName} onChange={setNewName} placeholder="Auto-generated from position + employee" description="Auto-filled — edit if you want a custom name" />
             <div>
               <label className="mb-1.5 block text-xs font-medium text-text-secondary">Deployment Mode</label>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
                 <button
                   className={`rounded-xl border p-3 text-left transition-all ${newDeployMode === 'serverless' ? 'border-primary bg-primary/5' : 'border-dark-border/40 bg-surface-dim hover:border-dark-border'}`}
                   onClick={() => setNewDeployMode('serverless')}
                 >
                   <p className="text-sm font-medium text-text-primary">Serverless</p>
-                  <p className="text-xs text-text-muted mt-0.5">AgentCore microVM. Scales to zero, pay-per-use. Default for most employees.</p>
+                  <p className="text-xs text-text-muted mt-0.5">AgentCore microVM. Scales to zero, pay-per-use.</p>
                 </button>
                 <button
                   className={`rounded-xl border p-3 text-left transition-all ${newDeployMode === 'always-on-ecs' ? 'border-primary bg-primary/5' : 'border-dark-border/40 bg-surface-dim hover:border-dark-border'}`}
                   onClick={() => setNewDeployMode('always-on-ecs')}
                 >
-                  <p className="text-sm font-medium text-text-primary">Always-on (Fargate)</p>
-                  <p className="text-xs text-text-muted mt-0.5">Persistent ECS container. For scheduled tasks, direct IM bots, instant response.</p>
+                  <p className="text-sm font-medium text-text-primary">ECS (Fargate)</p>
+                  <p className="text-xs text-text-muted mt-0.5">Persistent container. Scheduled tasks, direct IM.</p>
+                </button>
+                <button
+                  className={`rounded-xl border p-3 text-left transition-all ${newDeployMode === 'eks' ? 'border-primary bg-primary/5' : 'border-dark-border/40 bg-surface-dim hover:border-dark-border'}`}
+                  onClick={() => setNewDeployMode('eks')}
+                >
+                  <p className="text-sm font-medium text-text-primary">EKS (Kubernetes)</p>
+                  <p className="text-xs text-text-muted mt-0.5">Operator-managed pod. EFS, Helm, China support.</p>
                 </button>
               </div>
             </div>
@@ -446,7 +453,7 @@ export default function AgentList() {
               <div><p className="text-xs text-text-muted">Position</p><p className="text-sm font-medium">{POSITIONS.find(p => p.id === newPos)?.name || '(not selected)'}</p></div>
               <div><p className="text-xs text-text-muted">Employee</p><p className="text-sm font-medium">{EMPLOYEES.find(e => e.id === newEmp)?.name || '(not selected)'}</p></div>
               <div><p className="text-xs text-text-muted">Default Channel</p><p className="text-sm font-medium">{POSITIONS.find(p => p.id === newPos)?.defaultChannel || 'discord'}</p></div>
-              <div><p className="text-xs text-text-muted">Deployment</p><p className="text-sm font-medium">{newDeployMode === 'always-on-ecs' ? '⚡ Always-on (Fargate)' : 'Serverless (AgentCore)'}</p></div>
+              <div><p className="text-xs text-text-muted">Deployment</p><p className="text-sm font-medium">{newDeployMode === 'eks' ? '☸ EKS (Kubernetes)' : newDeployMode === 'always-on-ecs' ? '⚡ ECS (Fargate)' : 'Serverless (AgentCore)'}</p></div>
             </div>
           </div>
         )}
