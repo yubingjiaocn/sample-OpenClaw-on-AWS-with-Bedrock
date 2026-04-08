@@ -743,12 +743,27 @@ async def proxy_eks_gateway(agent_id: str, path: str, request: Request,
             data=body if body else None, timeout=(3, 15), allow_redirects=False,
         )
 
-        excluded = {"transfer-encoding", "content-encoding", "connection"}
+        excluded = {"transfer-encoding", "content-encoding", "connection", "content-length"}
         resp_headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded}
 
+        content = resp.content
+        ct = resp.headers.get("content-type", "")
+
+        # Inject base-path hint + auth token into HTML so the gateway JS
+        # can build WebSocket URLs correctly even behind a reverse proxy.
+        if "text/html" in ct and qt and b"<head>" in content:
+            base_path = f"/api/v1/admin/eks/{agent_id}/gateway"
+            inject = (
+                f'<script>'
+                f'window.__OPENCLAW_CONTROL_UI_BASE_PATH__="{base_path}";'
+                f'window.__OPENCLAW_PROXY_TOKEN__="{qt}";'
+                f'</script>'
+            ).encode()
+            content = content.replace(b"<head>", b"<head>" + inject, 1)
+
         response = Response(
-            content=resp.content, status_code=resp.status_code,
-            headers=resp_headers, media_type=resp.headers.get("content-type"),
+            content=content, status_code=resp.status_code,
+            headers=resp_headers, media_type=ct,
         )
 
         # Set cookie on first request so sub-resources authenticate
