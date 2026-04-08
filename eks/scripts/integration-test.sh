@@ -118,7 +118,7 @@ if $RUNNING; then
 
   # ── 9. Duplicate deploy → 409 ──────────────────────────────
   info "9. Duplicate deploy (expect 409)..."
-  DUP_CODE=$(curl -sf -o /dev/null -w '%{http_code}' -X POST -H "$AUTH" -H "Content-Type: application/json" \
+  DUP_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "$AUTH" -H "Content-Type: application/json" \
     -d '{"model":"bedrock/x"}' "${BASE}/api/v1/admin/eks/agent-helpdesk/deploy")
   if [[ "$DUP_CODE" == "409" ]]; then pass "Duplicate blocked (409)"; else fail "Duplicate: $DUP_CODE (expected 409)"; fi
 
@@ -134,11 +134,11 @@ fi
 
 # ── 11. UI deploy modal ─────────────────────────────────────
 info "11. UI deploy modal..."
-JS_FILE=$(curl -sf "${BASE}/" | grep -o 'assets/index-[^"]*')
-JS=$(curl -sf "${BASE}/${JS_FILE}" -o /tmp/integration-test-js.tmp && cat /tmp/integration-test-js.tmp)
+JS_FILE=$(curl -sf "${BASE}/" | grep -o 'assets/index-[^"]*\.js')
+curl -sf "${BASE}/${JS_FILE}" > /tmp/integration-test-js.tmp
 UI_OK=true
 for text in "Deploy Agent to EKS" "Global Registry" "Container Image" "Compute Resources"; do
-  if echo "$JS" | grep -q "$text"; then
+  if grep -q "$text" /tmp/integration-test-js.tmp; then
     pass "UI: '$text' present"
   else
     fail "UI: '$text' missing"

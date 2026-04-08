@@ -30,6 +30,7 @@
 #   --skip-build  Skip Docker image build
 #   --mirror      Force mirror all images (even in global regions or if already in ECR)
 #   --no-mirror   Never mirror (even in China)
+#   --platform    Target platform (e.g. linux/arm64) for cross-arch builds
 #
 # Prerequisites:
 #   - Docker running locally
@@ -52,6 +53,7 @@ NAME="openclaw-eks"
 AWS_PROFILE_ARG=""
 SKIP_BUILD=false
 MIRROR_MODE="auto"  # auto | always | never
+PLATFORM=""          # e.g. linux/arm64 for cross-arch builds
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -62,6 +64,7 @@ while [[ $# -gt 0 ]]; do
     --mirror)      MIRROR_MODE="always"; shift ;;
     --no-mirror)   MIRROR_MODE="never"; shift ;;
     --skip-mirror) MIRROR_MODE="never"; shift ;;  # backward compat
+    --platform)    PLATFORM="$2"; shift 2 ;;
     *) error "Unknown flag: $1" ;;
   esac
 done
@@ -102,11 +105,14 @@ aws ecr create-repository $AWS_PROFILE_ARG \
 if ! $SKIP_BUILD; then
   info "Building admin console Docker image..."
   cd "$REPO_ROOT/enterprise/admin-console"
-  docker build -t "$ADMIN_ECR:latest" .
-  success "Docker build complete"
-
-  info "Pushing to $ADMIN_ECR:latest..."
-  docker push "$ADMIN_ECR:latest"
+  if [[ -n "$PLATFORM" ]]; then
+    info "Cross-platform build: $PLATFORM (using buildx)"
+    docker buildx build --platform "$PLATFORM" -t "$ADMIN_ECR:latest" --push .
+  else
+    docker build -t "$ADMIN_ECR:latest" .
+    info "Pushing to $ADMIN_ECR:latest..."
+    docker push "$ADMIN_ECR:latest"
+  fi
   success "Admin console image pushed"
 else
   warn "Skipping build (--skip-build)"
@@ -194,8 +200,10 @@ if $DO_MIRROR; then
       fi
     fi
 
-    # Pull
-    if ! docker pull "$SRC" > /dev/null 2>&1; then
+    # Pull (with optional platform override for cross-arch)
+    PULL_ARGS=""
+    [[ -n "$PLATFORM" ]] && PULL_ARGS="--platform $PLATFORM"
+    if ! docker pull $PULL_ARGS "$SRC" > /dev/null 2>&1; then
       echo -e "${RED}PULL FAILED${NC}"
       MIRROR_FAIL=$((MIRROR_FAIL + 1))
       continue

@@ -21,24 +21,14 @@ locals {
 data "aws_caller_identity" "current" {}
 
 # -----------------------------------------------------------------------------
-# ECR Repository
+# ECR Repository — managed externally by build-and-mirror.sh
+# This avoids terraform destroy wiping images that are expensive to re-push
+# (especially cross-border to China).
 # -----------------------------------------------------------------------------
-resource "aws_ecr_repository" "admin_console" {
-  count = var.image_repository == "" ? 1 : 0
-
-  name                 = local.ecr_repo_name
-  image_tag_mutability = "MUTABLE"
-  force_delete         = true
-
-  image_scanning_configuration {
-    scan_on_push = true
-  }
-
-  tags = var.tags
-}
-
 locals {
-  ecr_uri = var.image_repository != "" ? var.image_repository : aws_ecr_repository.admin_console[0].repository_url
+  dns_suffix = var.is_china_region ? "amazonaws.com.cn" : "amazonaws.com"
+  default_ecr_uri = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.region}.${local.dns_suffix}/${local.ecr_repo_name}"
+  ecr_uri = var.image_repository != "" ? var.image_repository : local.default_ecr_uri
 }
 
 # -----------------------------------------------------------------------------

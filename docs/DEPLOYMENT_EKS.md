@@ -609,3 +609,250 @@ Both Terraform and the standalone deploy script create RBAC automatically (via t
 helm upgrade admin-console enterprise/admin-console/chart \
   --namespace openclaw --reuse-values --set rbac.create=true
 ```
+
+---
+
+## China Region Deployment Guide (Offline)
+
+China regions (cn-northwest-1, cn-north-1) cannot access ghcr.io, Docker Hub, or other overseas container registries. This guide explains how to deploy using **only a China EC2 instance**, relaying all overseas resources through your local PC.
+
+### Network Assumptions
+
+| Environment | Network Access |
+|-------------|---------------|
+| **Local PC** (Windows/Mac) | Can access GitHub, ghcr.io, Docker Hub |
+| **China EC2 instance** | No access to ghcr.io/Docker Hub; can access same-region S3 and ECR |
+| **EKS cluster nodes** | Can only pull from same-region ECR |
+
+### Prerequisites
+
+**On your local PC:**
+
+| Tool | Purpose | Download |
+|------|---------|----------|
+| Docker Desktop | Pull and save images | https://www.docker.com/products/docker-desktop |
+| AWS CLI v2 | Upload to S3 | https://aws.amazon.com/cli |
+| Git | Clone the repository | https://git-scm.com |
+
+**On the China EC2 instance:**
+
+| Tool | Purpose |
+|------|---------|
+| Docker | Load and push images to ECR |
+| AWS CLI v2 | S3 download, ECR operations |
+| kubectl | Cluster management |
+| Terraform >= 1.3 | Infrastructure deployment |
+| Helm >= 3.12 | Application deployment |
+
+### Step 1: Clone and Package the Project (Local PC)
+
+```bash
+git clone https://github.com/aws-samples/sample-OpenClaw-on-AWS-with-Bedrock.git
+cd sample-OpenClaw-on-AWS-with-Bedrock
+
+# Package the project (Terraform modules, Helm chart, scripts)
+tar czf openclaw-eks-project.tar.gz \
+  eks/ enterprise/ docs/ CLAUDE.md README.md
+```
+
+### Step 2: Pull and Save Container Images (Local PC)
+
+Choose `--platform` based on your EKS node architecture (Graviton = `linux/arm64`, Intel/AMD = `linux/amd64`).
+
+```bash
+PLATFORM="linux/arm64"  # Graviton nodes
+# PLATFORM="linux/amd64"  # Intel/AMD nodes
+
+# Core images (required)
+docker pull --platform $PLATFORM ghcr.io/openclaw/openclaw:latest
+docker pull --platform $PLATFORM ghcr.io/astral-sh/uv:0.6-bookworm-slim
+docker pull --platform $PLATFORM nginx:1.27-alpine
+docker pull --platform $PLATFORM otel/opentelemetry-collector:0.120.0
+docker pull --platform $PLATFORM ghcr.io/openclaw-rocks/openclaw-operator:v0.25.2
+
+# Optional sidecar images
+docker pull --platform $PLATFORM chromedp/headless-shell:stable   # Browser sandbox
+docker pull --platform $PLATFORM rclone/rclone:latest              # Backup
+docker pull --platform $PLATFORM tsl0922/ttyd:latest               # Web terminal
+docker pull --platform $PLATFORM ghcr.io/tailscale/tailscale:latest  # VPN
+
+# Save to tar.gz (batch to minimize transfers)
+docker save \
+  ghcr.io/openclaw/openclaw:latest \
+  ghcr.io/astral-sh/uv:0.6-bookworm-slim \
+  nginx:1.27-alpine \
+  otel/opentelemetry-collector:0.120.0 \
+  ghcr.io/openclaw-rocks/openclaw-operator:v0.25.2 \
+  | gzip > core-images.tar.gz
+
+docker save \
+  chromedp/headless-shell:stable \
+  rclone/rclone:latest \
+  tsl0922/ttyd:latest \
+  ghcr.io/tailscale/tailscale:latest \
+  | gzip > sidecar-images.tar.gz
+```
+
+### Step 3: Build the Admin Console Image (Local PC)
+
+```bash
+cd enterprise/admin-console
+
+# Cross-platform build (e.g., x86 PC targeting arm64 EKS)
+docker buildx build --platform $PLATFORM -t openclaw-admin-console:latest --load .
+
+docker save openclaw-admin-console:latest | gzip > admin-console.tar.gz
+```
+
+### Step 4: Transfer via S3 to China
+
+S3 multipart upload is more reliable than cross-border Docker push and supports resume.
+
+```bash
+# Configure China AWS CLI profile (if not already done)
+aws configure --profile china
+# Region: cn-northwest-1
+# Output: json
+
+S3_BUCKET="your-china-s3-bucket"  # Use an existing bucket or create one
+
+# Upload images and project package
+aws s3 cp core-images.tar.gz s3://$S3_BUCKET/openclaw-deploy/ --profile china --region cn-northwest-1
+aws s3 cp sidecar-images.tar.gz s3://$S3_BUCKET/openclaw-deploy/ --profile china --region cn-northwest-1
+aws s3 cp admin-console.tar.gz s3://$S3_BUCKET/openclaw-deploy/ --profile china --region cn-northwest-1
+aws s3 cp openclaw-eks-project.tar.gz s3://$S3_BUCKET/openclaw-deploy/ --profile china --region cn-northwest-1
+```
+
+> **Tip:** Cross-border S3 upload runs at ~1-2 MiB/s. Core images (~1GB) take ~15-20 minutes. Once uploaded, same-region S3→EC2 download is 200+ MiB/s.
+
+### Step 5: Load Images on China EC2
+
+```bash
+S3_BUCKET="your-china-s3-bucket"
+REGION="cn-northwest-1"
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+ECR="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com.cn"
+
+# Download (same-region, very fast)
+aws s3 cp s3://$S3_BUCKET/openclaw-deploy/core-images.tar.gz /tmp/
+aws s3 cp s3://$S3_BUCKET/openclaw-deploy/sidecar-images.tar.gz /tmp/
+aws s3 cp s3://$S3_BUCKET/openclaw-deploy/admin-console.tar.gz /tmp/
+aws s3 cp s3://$S3_BUCKET/openclaw-deploy/openclaw-eks-project.tar.gz ~/
+
+# Extract project
+cd ~ && tar xzf openclaw-eks-project.tar.gz
+
+# Load Docker images
+gunzip -c /tmp/core-images.tar.gz | docker load
+gunzip -c /tmp/sidecar-images.tar.gz | docker load
+gunzip -c /tmp/admin-console.tar.gz | docker load
+```
+
+### Step 6: Push Images to China ECR
+
+```bash
+# Login to ECR
+aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR
+
+NAME="openclaw-cn"  # Must match Terraform var.name
+
+# Create ECR repositories (idempotent)
+for repo in openclaw/openclaw astral-sh/uv library/nginx otel/opentelemetry-collector \
+            openclaw-rocks/openclaw-operator chromedp/headless-shell rclone/rclone \
+            tsl0922/ttyd tailscale/tailscale ${NAME}/admin-console; do
+  aws ecr create-repository --repository-name $repo --region $REGION 2>/dev/null || true
+done
+
+# Tag and push core images
+docker tag ghcr.io/openclaw/openclaw:latest $ECR/openclaw/openclaw:latest
+docker tag ghcr.io/astral-sh/uv:0.6-bookworm-slim $ECR/astral-sh/uv:0.6-bookworm-slim
+docker tag nginx:1.27-alpine $ECR/library/nginx:1.27-alpine
+docker tag otel/opentelemetry-collector:0.120.0 $ECR/otel/opentelemetry-collector:0.120.0
+docker tag ghcr.io/openclaw-rocks/openclaw-operator:v0.25.2 $ECR/openclaw-rocks/openclaw-operator:v0.25.2
+docker tag openclaw-admin-console:latest $ECR/${NAME}/admin-console:latest
+
+for img in openclaw/openclaw:latest astral-sh/uv:0.6-bookworm-slim \
+           library/nginx:1.27-alpine otel/opentelemetry-collector:0.120.0 \
+           openclaw-rocks/openclaw-operator:v0.25.2 ${NAME}/admin-console:latest; do
+  echo "Pushing $img..."
+  docker push $ECR/$img
+done
+
+# Push optional sidecar images
+docker tag chromedp/headless-shell:stable $ECR/chromedp/headless-shell:stable
+docker tag rclone/rclone:latest $ECR/rclone/rclone:latest
+docker tag tsl0922/ttyd:latest $ECR/tsl0922/ttyd:latest
+docker tag ghcr.io/tailscale/tailscale:latest $ECR/tailscale/tailscale:latest
+
+for img in chromedp/headless-shell:stable rclone/rclone:latest \
+           tsl0922/ttyd:latest tailscale/tailscale:latest; do
+  docker push $ECR/$img
+done
+
+echo "All images pushed to $ECR"
+```
+
+### Step 7: Terraform Deploy
+
+```bash
+cd ~/eks/terraform
+
+# Initialize (Terraform providers download from HashiCorp registry, accessible from China)
+terraform workspace new china 2>/dev/null || terraform workspace select china
+terraform init -input=false
+
+# Deploy
+terraform apply -auto-approve \
+  -var="region=cn-northwest-1" \
+  -var="name=openclaw-cn" \
+  -var="architecture=arm64" \
+  -var="enable_efs=true" \
+  -var="enable_admin_console=true" \
+  -var="admin_password=YourPassword" \
+  -var="seed_demo_data=true"
+```
+
+> **Note:** The first `apply` may fail with K8s permission errors due to EKS access entry propagation delay. Re-run `terraform apply` to resolve. If a Helm release is stuck, run `helm uninstall <name> -n <ns>` then retry.
+
+### Step 8: Verify
+
+```bash
+# Configure kubectl
+aws eks --region cn-northwest-1 update-kubeconfig --name openclaw-cn
+
+# Check nodes and pods
+kubectl get nodes
+kubectl get pods -A
+
+# Port-forward to admin console
+kubectl -n openclaw port-forward svc/admin-console 8099:8099
+# Open http://localhost:8099 in your browser
+```
+
+### Image Update Workflow
+
+To update images later, repeat Steps 2-6 (pull only changed images). You can also use `build-and-mirror.sh` with the `--platform` flag:
+
+```bash
+# On a machine with overseas registry access
+bash eks/scripts/build-and-mirror.sh \
+  --region cn-northwest-1 \
+  --name openclaw-cn \
+  --profile china \
+  --platform linux/arm64 \
+  --mirror
+```
+
+### File Manifest
+
+Complete list of files needed for deployment:
+
+| File | Size (approx.) | Description |
+|------|----------------|-------------|
+| `openclaw-eks-project.tar.gz` | ~5 MB | Terraform, Helm chart, scripts |
+| `core-images.tar.gz` | ~1 GB | OpenClaw + operator + base images |
+| `sidecar-images.tar.gz` | ~100 MB | Optional sidecars (excludes ollama) |
+| `admin-console.tar.gz` | ~140 MB | Admin console Docker image |
+| **Total** | **~1.3 GB** | |
+
+> `ollama/ollama` (~3.4 GB) is too large for routine transfer. Only transfer it if you need local LLM inference.
