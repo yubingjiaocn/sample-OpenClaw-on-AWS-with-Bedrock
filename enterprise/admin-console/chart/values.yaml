@@ -1,0 +1,73 @@
+# OpenClaw Admin Console Helm Values
+
+replicaCount: 1
+
+image:
+  repository: ""  # Required: ECR URI (e.g. 123456.dkr.ecr.us-west-2.amazonaws.com/openclaw/admin-console)
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+# --- AWS Configuration ---
+aws:
+  region: "us-west-2"
+  stackName: "openclaw-eks"
+  dynamodbTable: ""       # e.g. openclaw-eks-enterprise
+  dynamodbRegion: ""      # defaults to aws.region
+  s3Bucket: ""            # e.g. openclaw-eks-workspaces-123456
+
+# --- Admin Auth ---
+auth:
+  adminPassword: "admin123"
+  jwtSecret: ""           # auto-generated if empty
+
+# --- Kubernetes ---
+namespace: "openclaw"
+
+serviceAccount:
+  create: true
+  name: "admin-console"
+  annotations: {}
+  # eks.amazonaws.com/role-arn: "arn:aws:iam::123456:role/admin-console"
+
+rbac:
+  create: true  # Create ClusterRole + ClusterRoleBinding for K8s API access
+
+# --- OpenClaw Operator ---
+operatorNamespace: "openclaw-operator-system"
+
+# --- Container Image Registry (China) ---
+# Set this to your China ECR registry to use mirrored operator images.
+# Passed as OPENCLAW_REGISTRY env var to the admin console.
+openclawRegistry: ""
+
+# --- Resources ---
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+# --- Service ---
+service:
+  type: ClusterIP
+  port: 8099
+
+# --- Probes ---
+readinessProbe:
+  tcpSocket:
+    port: 8099
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+livenessProbe:
+  tcpSocket:
+    port: 8099
+  initialDelaySeconds: 10
+  periodSeconds: 30
+
+# --- Node scheduling ---
+nodeSelector: {}
+tolerations: []
+affinity: {}

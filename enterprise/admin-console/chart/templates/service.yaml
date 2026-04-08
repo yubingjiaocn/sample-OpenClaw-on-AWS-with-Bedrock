@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: admin-console
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: admin-console
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  selector:
+    app: admin-console
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: 8099
+      name: http
+  type: {{ .Values.service.type }}

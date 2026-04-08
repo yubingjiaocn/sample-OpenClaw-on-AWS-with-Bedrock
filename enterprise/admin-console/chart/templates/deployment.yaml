@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-console
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: admin-console
+    app.kubernetes.io/name: admin-console
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: admin-console
+  template:
+    metadata:
+      labels:
+        app: admin-console
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      containers:
+        - name: admin-console
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 8099
+              name: http
+          env:
+            - name: AWS_REGION
+              value: {{ .Values.aws.region | quote }}
+            - name: GATEWAY_REGION
+              value: {{ .Values.aws.region | quote }}
+            - name: DYNAMODB_TABLE
+              value: {{ .Values.aws.dynamodbTable | quote }}
+            - name: DYNAMODB_REGION
+              value: {{ default .Values.aws.region .Values.aws.dynamodbRegion | quote }}
+            - name: S3_BUCKET
+              value: {{ .Values.aws.s3Bucket | quote }}
+            - name: STACK_NAME
+              value: {{ .Values.aws.stackName | quote }}
+            - name: CONSOLE_PORT
+              value: "8099"
+            - name: ADMIN_PASSWORD
+              value: {{ .Values.auth.adminPassword | quote }}
+            {{- if .Values.auth.jwtSecret }}
+            - name: JWT_SECRET
+              value: {{ .Values.auth.jwtSecret | quote }}
+            {{- end }}
+            - name: K8S_IN_CLUSTER
+              value: "true"
+            - name: OPENCLAW_NAMESPACE
+              value: {{ .Values.namespace | quote }}
+            - name: OPERATOR_NAMESPACE
+              value: {{ .Values.operatorNamespace | quote }}
+            {{- if .Values.openclawRegistry }}
+            - name: OPENCLAW_REGISTRY
+              value: {{ .Values.openclawRegistry | quote }}
+            {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

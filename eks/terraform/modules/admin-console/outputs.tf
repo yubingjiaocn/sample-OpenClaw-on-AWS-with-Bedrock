@@ -24,7 +24,7 @@ output "iam_role_arn" {
 
 output "service_account_name" {
   description = "Kubernetes ServiceAccount name"
-  value       = kubernetes_service_account_v1.admin_console.metadata[0].name
+  value       = local.service_account
 }
 
 output "service_url" {

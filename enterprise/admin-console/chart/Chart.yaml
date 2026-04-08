@@ -1,0 +1,6 @@
+apiVersion: v2
+name: openclaw-admin-console
+description: OpenClaw Enterprise Admin Console — manage AI agents across EKS, ECS, and AgentCore
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

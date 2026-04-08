@@ -300,22 +300,13 @@ else
   warn "Templates dir not found: $TEMPLATES_DIR"
 fi
 
-# ── Step 8: Deploy to EKS ───────────────────────────────────────────────────
-info "[8/8] Deploying to EKS..."
+# ── Step 8: Deploy to EKS via Helm ──────────────────────────────────────────
+info "[8/8] Deploying to EKS via Helm chart..."
 
 # Namespace
 kubectl create namespace "$NAMESPACE" 2>/dev/null || true
 
-# ServiceAccount
-kubectl apply -f - <<YAML
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: admin-console
-  namespace: $NAMESPACE
-YAML
-
-# Pod Identity Association
+# Pod Identity Association (AWS-side, not in Helm)
 EXISTING_ASSOC=$(aws eks list-pod-identity-associations \
   --cluster-name "$CLUSTER_NAME" --namespace "$NAMESPACE" \
   --service-account admin-console --region "$REGION" \
@@ -333,89 +324,26 @@ else
   success "Pod Identity association exists: $EXISTING_ASSOC"
 fi
 
-# Deployment + Service
-kubectl apply -f - <<YAML
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: admin-console
-  namespace: $NAMESPACE
-  labels:
-    app: admin-console
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: admin-console
-  template:
-    metadata:
-      labels:
-        app: admin-console
-    spec:
-      serviceAccountName: admin-console
-      containers:
-        - name: admin-console
-          image: ${ECR_URI}:latest
-          imagePullPolicy: Always
-          ports:
-            - containerPort: 8099
-              name: http
-          env:
-            - name: AWS_REGION
-              value: "${REGION}"
-            - name: GATEWAY_REGION
-              value: "${REGION}"
-            - name: DYNAMODB_TABLE
-              value: "${DDB_TABLE}"
-            - name: DYNAMODB_REGION
-              value: "${REGION}"
-            - name: S3_BUCKET
-              value: "${S3_BUCKET}"
-            - name: STACK_NAME
-              value: "${STACK_NAME}"
-            - name: CONSOLE_PORT
-              value: "8099"
-            - name: K8S_IN_CLUSTER
-              value: "true"
-            - name: OPENCLAW_NAMESPACE
-              value: "${NAMESPACE}"
-          resources:
-            requests:
-              cpu: 250m
-              memory: 512Mi
-            limits:
-              cpu: "1"
-              memory: 1Gi
-          readinessProbe:
-            tcpSocket:
-              port: 8099
-            initialDelaySeconds: 5
-            periodSeconds: 10
-          livenessProbe:
-            tcpSocket:
-              port: 8099
-            initialDelaySeconds: 10
-            periodSeconds: 30
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: admin-console
-  namespace: $NAMESPACE
-spec:
-  selector:
-    app: admin-console
-  ports:
-    - port: 8099
-      targetPort: 8099
-      name: http
-  type: ClusterIP
-YAML
+# Helm install/upgrade — includes ServiceAccount, RBAC, Deployment, Service
+CHART_DIR="$(dirname "$SCRIPT_DIR")/chart"
+if [ ! -f "$CHART_DIR/Chart.yaml" ]; then
+  error "Helm chart not found at $CHART_DIR"
+fi
 
-# Wait for rollout
-kubectl -n "$NAMESPACE" rollout restart deployment/admin-console
-kubectl -n "$NAMESPACE" rollout status deployment/admin-console --timeout=120s || \
-  warn "Rollout timed out — check: kubectl -n $NAMESPACE get pods -l app=admin-console"
+helm upgrade --install admin-console "$CHART_DIR" \
+  --namespace "$NAMESPACE" \
+  --set "image.repository=${ECR_URI}" \
+  --set "image.tag=latest" \
+  --set "image.pullPolicy=Always" \
+  --set "aws.region=${REGION}" \
+  --set "aws.stackName=${STACK_NAME}" \
+  --set "aws.dynamodbTable=${DDB_TABLE}" \
+  --set "aws.dynamodbRegion=${REGION}" \
+  --set "aws.s3Bucket=${S3_BUCKET}" \
+  --set "auth.adminPassword=${ADMIN_PASSWORD}" \
+  --set "namespace=${NAMESPACE}" \
+  --wait --timeout 120s || \
+  warn "Helm install timed out — check: kubectl -n $NAMESPACE get pods -l app=admin-console"
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 echo ""

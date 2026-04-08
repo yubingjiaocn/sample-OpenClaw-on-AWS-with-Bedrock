@@ -216,67 +216,61 @@ resource "aws_iam_role_policy" "admin_console" {
 }
 
 # -----------------------------------------------------------------------------
-# RBAC — Admin Console needs K8s API access to manage OpenClawInstance CRDs,
-# read pods/logs/deployments (operator status), and list CRDs.
+# Helm Release — deploys ServiceAccount, RBAC, Deployment, Service
+# Uses the chart at enterprise/admin-console/chart/
 # -----------------------------------------------------------------------------
-resource "kubernetes_cluster_role_v1" "admin_console" {
-  metadata {
-    name = "admin-console"
+resource "helm_release" "admin_console" {
+  name      = "admin-console"
+  chart     = "${path.module}/../../../../enterprise/admin-console/chart"
+  namespace = var.openclaw_namespace
+
+  set {
+    name  = "image.repository"
+    value = local.ecr_uri
+  }
+  set {
+    name  = "image.tag"
+    value = var.image_tag
+  }
+  set {
+    name  = "aws.region"
+    value = var.region
+  }
+  set {
+    name  = "aws.stackName"
+    value = local.stack_name
+  }
+  set {
+    name  = "aws.dynamodbTable"
+    value = local.dynamodb_table
+  }
+  set {
+    name  = "aws.dynamodbRegion"
+    value = var.region
+  }
+  set {
+    name  = "aws.s3Bucket"
+    value = aws_s3_bucket.workspaces.id
+  }
+  set_sensitive {
+    name  = "auth.adminPassword"
+    value = var.admin_password
+  }
+  set {
+    name  = "namespace"
+    value = var.openclaw_namespace
   }
 
-  rule {
-    api_groups = ["openclaw.rocks"]
-    resources  = ["openclawinstances", "openclawselfconfigs"]
-    verbs      = ["get", "list", "watch", "create", "update", "patch", "delete"]
-  }
+  wait    = true
+  timeout = 300
 
-  rule {
-    api_groups = [""]
-    resources  = ["pods", "pods/log", "services", "serviceaccounts", "namespaces"]
-    verbs      = ["get", "list", "watch"]
-  }
-
-  rule {
-    api_groups = ["apps"]
-    resources  = ["deployments", "statefulsets"]
-    verbs      = ["get", "list", "watch"]
-  }
-
-  rule {
-    api_groups = ["apiextensions.k8s.io"]
-    resources  = ["customresourcedefinitions"]
-    verbs      = ["get", "list"]
-  }
 }
 
-resource "kubernetes_cluster_role_binding_v1" "admin_console" {
-  metadata {
-    name = "admin-console"
-  }
-
-  role_ref {
-    api_group = "rbac.authorization.k8s.io"
-    kind      = "ClusterRole"
-    name      = kubernetes_cluster_role_v1.admin_console.metadata[0].name
-  }
-
-  subject {
-    kind      = "ServiceAccount"
-    name      = local.service_account
-    namespace = var.openclaw_namespace
-  }
-}
-
 # -----------------------------------------------------------------------------
-# EKS Pod Identity Association
+# EKS Pod Identity Association (AWS-side — not in Helm chart)
+# Pod Identity references the SA by name; it doesn't need the SA to exist first.
+# The Helm chart creates the SA; the pod picks up the identity on next restart.
 # -----------------------------------------------------------------------------
-resource "kubernetes_service_account_v1" "admin_console" {
-  metadata {
-    name      = local.service_account
-    namespace = var.openclaw_namespace
-  }
-}
-
 resource "aws_eks_pod_identity_association" "admin_console" {
   cluster_name    = var.cluster_name
   namespace       = var.openclaw_namespace
@@ -284,135 +278,6 @@ resource "aws_eks_pod_identity_association" "admin_console" {
   role_arn        = aws_iam_role.admin_console.arn
 
   tags = var.tags
-
-  depends_on = [kubernetes_service_account_v1.admin_console]
-}
-
-# -----------------------------------------------------------------------------
-# Kubernetes Deployment
-# -----------------------------------------------------------------------------
-resource "kubernetes_deployment_v1" "admin_console" {
-  metadata {
-    name      = "admin-console"
-    namespace = var.openclaw_namespace
-    labels    = { app = "admin-console" }
-  }
-
-  spec {
-    replicas = 1
-
-    selector {
-      match_labels = { app = "admin-console" }
-    }
-
-    template {
-      metadata {
-        labels = { app = "admin-console" }
-      }
-
-      spec {
-        service_account_name = kubernetes_service_account_v1.admin_console.metadata[0].name
-
-        container {
-          name  = "admin-console"
-          image = "${local.ecr_uri}:${var.image_tag}"
-
-          port {
-            container_port = 8099
-            name           = "http"
-          }
-
-          env {
-            name  = "AWS_REGION"
-            value = var.region
-          }
-          env {
-            name  = "GATEWAY_REGION"
-            value = var.region
-          }
-          env {
-            name  = "DYNAMODB_TABLE"
-            value = local.dynamodb_table
-          }
-          env {
-            name  = "DYNAMODB_REGION"
-            value = var.region
-          }
-          env {
-            name  = "S3_BUCKET"
-            value = aws_s3_bucket.workspaces.id
-          }
-          env {
-            name  = "STACK_NAME"
-            value = local.stack_name
-          }
-          env {
-            name  = "CONSOLE_PORT"
-            value = "8099"
-          }
-          env {
-            name  = "K8S_IN_CLUSTER"
-            value = "true"
-          }
-          env {
-            name  = "OPENCLAW_NAMESPACE"
-            value = var.openclaw_namespace
-          }
-
-          resources {
-            requests = {
-              cpu    = "250m"
-              memory = "512Mi"
-            }
-            limits = {
-              cpu    = "1"
-              memory = "1Gi"
-            }
-          }
-
-          readiness_probe {
-            tcp_socket {
-              port = 8099
-            }
-            initial_delay_seconds = 5
-            period_seconds        = 10
-          }
-
-          liveness_probe {
-            tcp_socket {
-              port = 8099
-            }
-            initial_delay_seconds = 10
-            period_seconds        = 30
-          }
-        }
-      }
-    }
-  }
-
-  depends_on = [aws_eks_pod_identity_association.admin_console]
-}
-
-# -----------------------------------------------------------------------------
-# Kubernetes Service
-# -----------------------------------------------------------------------------
-resource "kubernetes_service_v1" "admin_console" {
-  metadata {
-    name      = "admin-console"
-    namespace = var.openclaw_namespace
-  }
-
-  spec {
-    selector = { app = "admin-console" }
-
-    port {
-      port        = 8099
-      target_port = 8099
-      name        = "http"
-    }
-
-    type = "ClusterIP"
-  }
 }
 
 # -----------------------------------------------------------------------------
