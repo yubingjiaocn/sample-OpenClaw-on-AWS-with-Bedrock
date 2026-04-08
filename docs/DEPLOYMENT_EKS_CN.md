@@ -8,14 +8,14 @@
 
 ### 通用要求
 
-| 工具 | 版本要求 | 验证命令 |
-|------|---------|---------|
-| AWS CLI | >= 2.27 | `aws --version` |
-| kubectl | >= 1.28 | `kubectl version --client` |
-| Terraform | >= 1.3 | `terraform --version` |
-| Docker | >= 20.0 | `docker --version` |
-| Node.js | >= 22 | `node --version` |
-| Helm | >= 3.12 | `helm version` |
+| 工具        | 版本要求  | 验证命令 |
+|-------------|----------|---------|
+| AWS CLI     | >= 2.27  | `aws --version` |
+| kubectl     | >= 1.28  | `kubectl version --client` |
+| Terraform   | >= 1.3   | `terraform --version` |
+| Docker      | >= 20.0  | `docker --version` |
+| Node.js     | >= 22    | `node --version` |
+| Helm        | >= 3.12  | `helm version` |
 
 ### EKS Pod Identity Agent
 
@@ -23,64 +23,57 @@
 
 ```bash
 # 检查是否已安装
-aws eks describe-addon --cluster-name 集群名称 --addon-name eks-pod-identity-agent --region 区域
+aws eks describe-addon --cluster-name 集群名称 \
+  --addon-name eks-pod-identity-agent --region 区域
 
 # 如未安装
-aws eks create-addon --cluster-name 集群名称 --addon-name eks-pod-identity-agent --region 区域
+aws eks create-addon --cluster-name 集群名称 \
+  --addon-name eks-pod-identity-agent --region 区域
 ```
+
+### AWS Load Balancer Controller（互联网访问）
+
+如需通过 ALB Ingress 将管理控制台暴露到互联网，需要安装 [AWS Load Balancer Controller](https://kubernetes-sigs.github.io/aws-load-balancer-controller/)。Terraform 中设置 `enable_alb_controller = true` 即可自动部署。
 
 ### 中国区域额外要求
 
-AWS 中国区域（`cn-northwest-1`、`cn-north-1`）存在网络限制，需要提前准备：
+AWS 中国区域（`cn-northwest-1`、`cn-north-1`）存在网络限制：
 
 | 要求 | 原因 | 处理方式 |
 |------|------|---------|
-| **镜像同步至中国区 ECR** | `ghcr.io` 和 Docker Hub 在中国大陆不可访问或极慢 | 运行 `build-and-mirror.sh`（见下方） |
-| **第三方模型提供商** | Amazon Bedrock **不在中国区域运营** | 使用 LiteLLM 代理，或配置 Anthropic/OpenAI/DeepSeek 等 API Key |
+| **镜像同步至中国区 ECR** | `ghcr.io` 和 Docker Hub 不可访问 | 运行 `build-and-mirror.sh` |
+| **第三方模型提供商** | Amazon Bedrock **不在中国区域运营** | 使用 LiteLLM 代理或直接 API Key |
 | **AWS 中国账户** | 独立分区（`aws-cn`） | 需要单独的 IAM 凭证 |
 | **AWS CLI Profile** | 中国账户需要独立的 Profile | `aws configure --profile china` |
 
 #### 中国区模型提供商
 
-Amazon Bedrock 不在 AWS 中国区域运营。有两种替代方案：
+Amazon Bedrock 不在 AWS 中国区域运营。两种替代方案：
 
-1. **LiteLLM 代理**（推荐）：在同一 EKS 集群部署 LiteLLM（Terraform 中设置 `enable_litellm = true`）。LiteLLM 提供 OpenAI 兼容接口，可路由至任意模型提供商。通过 `spec.config.raw` 配置 OpenClaw 实例使用 LiteLLM。
+1. **LiteLLM 代理**（推荐）：在同一集群部署（Terraform 设置 `enable_litellm = true`）。提供 OpenAI 兼容接口，可路由至任意模型提供商。
 
-2. **直接 API Key**：通过 Kubernetes Secret 传入 API Key（如 `ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`DEEPSEEK_API_KEY`），在 `spec.envFrom` 中引用。在 `spec.config.raw` 中配置模型指向提供商 API 端点。
+2. **直接 API Key**：创建 Kubernetes Secret 并在 OpenClawInstance CRD 中引用：
+
+```bash
+kubectl -n openclaw create secret generic model-api-keys \
+  --from-literal=ANTHROPIC_API_KEY=sk-ant-...
+
+kubectl -n openclaw patch openclawinstance AGENT名称 --type=merge \
+  -p '{"spec":{"envFrom":[{"secretRef":{"name":"model-api-keys"}}]}}'
+```
 
 #### 同步容器镜像至中国区 ECR
 
-OpenClaw Operator 创建的 Pod 会从 `ghcr.io` 和 Docker Hub 拉取镜像。这些镜像仓库在中国大陆无法访问。使用提供的脚本一键同步所有镜像：
+在具有良好国际网络的机器上运行（如全球区域的 EC2 实例）：
 
 ```bash
-# 在具有良好国际网络的机器上执行（如全球区域的 EC2 实例）
 bash eks/scripts/build-and-mirror.sh \
   --region cn-northwest-1 \
   --name openclaw-cn \
   --profile china
 ```
 
-该脚本会同步全部 10 个 Operator 镜像（openclaw、uv、nginx、otel-collector、chromedp、tailscale、ollama、ttyd、rclone、operator），并构建推送管理控制台镜像。完整镜像列表见脚本内容。
-
----
-
-## 部署方式一：Terraform（推荐）
-
-创建完整基础设施：VPC、EKS 集群、EFS、OpenClaw Operator、管理控制台及所有相关资源。
-
-### 第一步：构建镜像（Terraform 之前执行）
-
-Terraform 会创建 ECR 仓库和 K8s 部署，但必须先构建并推送 Docker 镜像。中国区域还需同步所有 Operator 使用的镜像。
-
-```bash
-# 全球区域
-bash eks/scripts/build-and-mirror.sh --region us-west-2 --name openclaw-prod
-
-# 中国区域（同时同步所有 Operator 镜像至中国区 ECR）
-bash eks/scripts/build-and-mirror.sh --region cn-northwest-1 --name openclaw-cn --profile china
-```
-
-同步的镜像包括：
+该脚本构建管理控制台镜像，并同步全部 10 个 Operator 镜像至中国区 ECR：
 
 | 镜像 | 用途 |
 |------|------|
@@ -95,9 +88,27 @@ bash eks/scripts/build-and-mirror.sh --region cn-northwest-1 --name openclaw-cn 
 | `rclone/rclone:latest` | S3 备份 Job |
 | `ghcr.io/openclaw-rocks/openclaw-operator:v0.25.2` | Operator 本身 |
 
+---
+
+## 部署方式一：Terraform（推荐）
+
+创建完整基础设施：VPC、EKS 集群、EFS、ALB Controller、OpenClaw Operator、管理控制台（含 Ingress）及所有 AWS 支撑资源。
+
+### 第一步：构建并推送镜像
+
+Terraform 会创建 ECR 仓库，但不会构建 Docker 镜像。需先执行：
+
+```bash
+# 全球区域
+bash eks/scripts/build-and-mirror.sh --region us-west-2 --name openclaw-prod
+
+# 中国区域（同时同步所有 Operator 镜像）
+bash eks/scripts/build-and-mirror.sh --region cn-northwest-1 --name openclaw-cn --profile china
+```
+
 ### 第二步：Terraform apply
 
-#### 全球区域
+**全球区域：**
 
 ```bash
 cd eks/terraform
@@ -108,16 +119,15 @@ terraform apply \
   -var="region=us-west-2" \
   -var="architecture=arm64" \
   -var="enable_efs=true" \
+  -var="enable_alb_controller=true" \
   -var="enable_admin_console=true" \
   -var="admin_password=您的安全密码"
 ```
 
-#### 中国区域
+**中国区域：**
 
 ```bash
 cd eks/terraform
-
-# 使用独立 workspace 隔离中国区状态
 terraform workspace new china
 terraform init
 
@@ -126,13 +136,41 @@ AWS_PROFILE=china terraform apply \
   -var="region=cn-northwest-1" \
   -var="architecture=x86" \
   -var="enable_efs=true" \
+  -var="enable_alb_controller=true" \
   -var="enable_admin_console=true" \
   -var="admin_password=您的安全密码"
 ```
 
-Terraform 会在每次 apply 时自动填充 DynamoDB 示例数据和上传 SOUL 模板至 S3（幂等操作）。
+Terraform 自动完成：
+- DynamoDB 示例数据初始化（幂等操作，不覆盖已有记录）
+- SOUL 模板上传至 S3
+- 创建 ALB Ingress 暴露到互联网
+- 配置 RBAC（ClusterRole + ClusterRoleBinding）实现 K8s API 访问
+- 配置 Pod Identity 实现 AWS API 访问
+
+### 第三步：访问管理控制台
+
+Apply 完成后，获取 ALB 地址：
+
+```bash
+kubectl -n openclaw get ingress admin-console \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+```
+
+在浏览器中打开该地址。使用 `emp-jiade` 和设置的密码登录。
+
+如需自定义域名和 HTTPS：
+
+```bash
+terraform apply \
+  -var="admin_console_ingress_host=admin.openclaw.example.com" \
+  -var="admin_console_certificate_arn=arn:aws:acm:区域:账户:certificate/证书ID" \
+  ...
+```
 
 ### Terraform 变量参考
+
+**核心变量：**
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
@@ -140,28 +178,41 @@ Terraform 会在每次 apply 时自动填充 DynamoDB 示例数据和上传 SOUL
 | `region` | `us-west-2` | AWS 区域（自动检测 `cn-` 前缀为中国区） |
 | `architecture` | `arm64` | `arm64`（Graviton）或 `x86` |
 | `enable_efs` | `true` | 启用 EFS 持久化存储（设为默认 StorageClass） |
-| `enable_admin_console` | `false` | 部署管理控制台（DynamoDB、S3、ECR、IAM、K8s） |
-| `admin_password` | `""` | 管理员登录密码（启用控制台时必填） |
+| `enable_alb_controller` | `false` | 启用 AWS Load Balancer Controller（ALB Ingress） |
 | `enable_kata` | `false` | 启用 Kata Containers（Firecracker 虚拟机隔离） |
 | `enable_monitoring` | `false` | 启用 Prometheus + Grafana 监控栈 |
+| `enable_litellm` | `false` | 启用 LiteLLM 代理（中国区域必需） |
 
-### 后续更新管理控制台镜像
+**管理控制台变量：**
 
-如需更新管理控制台镜像：
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `enable_admin_console` | `false` | 部署管理控制台 |
+| `admin_password` | `""` | 登录密码（启用时必填） |
+| `admin_console_image_tag` | `latest` | Docker 镜像标签 |
+| `admin_console_ingress_class` | `alb` | Ingress 类名 |
+| `admin_console_ingress_host` | `""` | 自定义域名（空 = ALB DNS） |
+| `admin_console_certificate_arn` | `""` | ACM 证书 ARN（HTTPS） |
+
+### 后续更新
+
+更新管理控制台代码后，重新构建推送：
 
 ```bash
 ECR_URI=$(cd eks/terraform && terraform output -raw admin_console_ecr)
-cd enterprise/admin-console && docker build -t $ECR_URI:latest . && docker push $ECR_URI:latest
+cd enterprise/admin-console
+docker build -t $ECR_URI:latest .
+docker push $ECR_URI:latest
 kubectl -n openclaw rollout restart deployment/admin-console
 ```
 
 ---
 
-## 部署方式二：独立脚本（无需 Terraform）
+## 部署方式二：独立脚本（已有集群）
 
-适用于**已有** EKS 集群的场景，仅创建管理控制台相关资源（不创建 VPC/EKS）。
+适用于**已有** EKS 集群的场景，通过 Helm Chart 部署。仅创建管理控制台相关资源。
 
-### 全球区域
+**全球区域：**
 
 ```bash
 cd enterprise/admin-console
@@ -172,7 +223,7 @@ bash deploy-eks.sh \
   --password 管理员密码
 ```
 
-### 中国区域
+**中国区域：**
 
 ```bash
 cd enterprise/admin-console
@@ -182,6 +233,12 @@ AWS_PROFILE=china bash deploy-eks.sh \
   --region cn-northwest-1 \
   --password 管理员密码
 ```
+
+脚本内部使用 `helm upgrade --install`，自动部署：
+- ServiceAccount（含可选 IRSA 注解）
+- ClusterRole + ClusterRoleBinding（K8s API 访问权限：CRD 管理、Pod/日志读取）
+- Deployment（FastAPI + React，端口 8099）
+- Service（ClusterIP）
 
 ### 脚本参数
 
@@ -195,16 +252,36 @@ AWS_PROFILE=china bash deploy-eks.sh \
 | `--skip-build` | false | 跳过 Docker 镜像构建 |
 | `--skip-seed` | false | 跳过 DynamoDB 数据初始化 |
 
-### 创建的资源
+### 创建的 AWS 资源
 
 | 资源 | 命名规则 | 用途 |
 |------|---------|------|
 | ECR 仓库 | `{stack}/admin-console` | Docker 镜像存储 |
 | DynamoDB 表 | `{stack}-enterprise` | 企业数据（单表设计） |
 | S3 存储桶 | `{stack}-workspaces-{account}` | SOUL 模板、工作空间、知识库 |
-| IAM 角色 | `{stack}-admin-console` | Pod Identity（DynamoDB/S3/SSM/EKS/ECR/CloudWatch） |
+| IAM 角色 | `{stack}-admin-console` | Pod Identity 权限 |
 | SSM 参数 | `/openclaw/{stack}/*` | 密钥（密码、JWT） |
-| K8s 资源 | ServiceAccount、Deployment、Service、ClusterRole | 管理控制台 Pod |
+
+### 启用互联网访问（独立部署）
+
+独立脚本默认部署为 ClusterIP。如需通过 ALB 暴露到互联网：
+
+```bash
+helm upgrade admin-console enterprise/admin-console/chart \
+  --namespace openclaw \
+  --reuse-values \
+  --set ingress.enabled=true \
+  --set ingress.className=alb \
+  --set ingress.host=admin.openclaw.example.com \
+  --set 'ingress.annotations.alb\.ingress\.kubernetes\.io/certificate-arn=ACM_ARN'
+```
+
+或使用端口转发本地访问：
+
+```bash
+kubectl -n openclaw port-forward svc/admin-console 8099:8099
+open http://localhost:8099
+```
 
 ---
 
@@ -214,28 +291,35 @@ AWS_PROFILE=china bash deploy-eks.sh \
 
 ### 通过 UI
 
-1. 开启端口转发：`kubectl -n openclaw port-forward svc/admin-console 8099:8099`
-2. 打开浏览器访问 `http://localhost:8099`
-3. 进入 **Agent Factory** → **EKS** 标签页
-4. 点击 **Deploy Agent** → 选择 Agent、模型和基础设施配置
-5. **中国区域**：在 **Global Registry** 字段填入中国区 ECR 地址（例如 `834204282212.dkr.ecr.cn-northwest-1.amazonaws.com.cn`）
+1. 打开管理控制台（ALB 地址或 `http://localhost:8099`）
+2. 进入 **Agent Factory** > **EKS** 标签页
+3. 点击 **Deploy Agent**
+4. 配置选项：
+   - **Agent**：从列表中选择
+   - **Model**：选择 Bedrock 模型（全球）或配置第三方模型（中国）
+   - **Container Image** / **Global Registry**：自定义镜像或中国区 ECR 地址
+   - **Compute Resources**：CPU / 内存的请求值和上限
+   - **Storage**：StorageClass 和大小
+   - **Chromium**：启用无头浏览器 Sidecar
+   - **高级选项**：Runtime Class（Kata）、Service 类型、备份计划、节点选择器、容忍度
+5. 点击 **Deploy**
 
 ### 通过 API
 
 ```bash
 # 全球区域
-curl -X POST http://localhost:8099/api/v1/admin/eks/agent-helpdesk/deploy \
+curl -X POST https://ALB地址/api/v1/admin/eks/agent-helpdesk/deploy \
   -H "Authorization: Bearer TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"model": "bedrock/us.amazon.nova-2-lite-v1:0"}'
 
 # 中国区域（设置全局镜像仓库）
-curl -X POST http://localhost:8099/api/v1/admin/eks/agent-helpdesk/deploy \
+curl -X POST https://ALB地址/api/v1/admin/eks/agent-helpdesk/deploy \
   -H "Authorization: Bearer TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "bedrock/us.amazon.nova-2-lite-v1:0",
-    "globalRegistry": "834204282212.dkr.ecr.cn-northwest-1.amazonaws.com.cn"
+    "model": "anthropic/claude-sonnet-4-5-20250929",
+    "globalRegistry": "账户ID.dkr.ecr.cn-northwest-1.amazonaws.com.cn"
   }'
 ```
 
@@ -243,18 +327,18 @@ curl -X POST http://localhost:8099/api/v1/admin/eks/agent-helpdesk/deploy \
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `model` | Nova 2 Lite | Bedrock 模型 ID |
-| `image` | ghcr.io/openclaw/openclaw | 主容器镜像（自定义构建用 ECR URI） |
+| `model` | Nova 2 Lite | 模型 ID（中国区使用第三方模型） |
+| `image` | ghcr.io/openclaw/openclaw | 主容器镜像 URI |
 | `globalRegistry` | （无） | **中国区域必填**：重写所有镜像的仓库地址 |
-| `storageClass` | 集群默认 | K8s StorageClass（推荐 `efs-sc`） |
+| `storageClass` | 集群默认（efs-sc） | K8s StorageClass |
 | `storageSize` | `10Gi` | PVC 大小 |
 | `cpuRequest` / `cpuLimit` | `500m` / `2` | CPU 资源 |
 | `memoryRequest` / `memoryLimit` | `2Gi` / `4Gi` | 内存资源 |
-| `runtimeClass` | （无） | `kata-qemu`：启用 Firecracker 隔离 |
+| `runtimeClass` | （无） | `kata-qemu`：Firecracker 虚拟机隔离 |
 | `chromium` | `false` | 启用无头浏览器 Sidecar |
-| `backupSchedule` | （无） | S3 备份的 Cron 表达式（如 `0 2 * * *`） |
+| `backupSchedule` | （无） | S3 备份 Cron 表达式（如 `0 2 * * *`） |
 | `serviceType` | `ClusterIP` | K8s Service 类型 |
-| `nodeSelector` | （无） | 节点标签 JSON（如 `{"gpu": "true"}`） |
+| `nodeSelector` | （无） | 节点标签 JSON |
 | `tolerations` | （无） | 容忍度 JSON |
 
 ---
@@ -270,12 +354,12 @@ bash eks/scripts/integration-test.sh \
   --region us-west-2 \
   --password 密码
 
-# 中国区域（指定镜像仓库）
+# 中国区域
 bash eks/scripts/integration-test.sh \
   --cluster openclaw-cn \
   --region cn-northwest-1 \
   --password 密码 \
-  --registry 834204282212.dkr.ecr.cn-northwest-1.amazonaws.com.cn
+  --registry 账户ID.dkr.ecr.cn-northwest-1.amazonaws.com.cn
 ```
 
 测试内容：登录、Operator 状态、实例部署、Pod 启动、PVC 存储类、镜像仓库覆盖、重载、重复部署拒绝、停止、UI 部署弹窗。
@@ -285,40 +369,47 @@ bash eks/scripts/integration-test.sh \
 ## 架构
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  EKS 集群                                            │
-│                                                       │
-│  ┌─────────────────────────────────────────────────┐ │
-│  │  openclaw 命名空间                                │ │
-│  │                                                   │ │
-│  │  ┌───────────────────┐  ┌──────────────────────┐│ │
-│  │  │  管理控制台        │  │  OpenClawInstance     ││ │
-│  │  │  (FastAPI+React)  │  │  (Operator 管理)      ││ │
-│  │  │  端口 8099        │──│  StatefulSet+Service  ││ │
-│  │  │  Pod Identity     │  │  +PVC (EFS)           ││ │
-│  │  └────────┬──────────┘  └──────────────────────┘│ │
-│  └───────────┼──────────────────────────────────────┘ │
-│              │                                         │
-│  ┌───────────┼──────────────────────────────────────┐ │
-│  │  openclaw-operator-system 命名空间                 │ │
-│  │  OpenClaw Operator（监听 CRD → 创建 K8s 资源）     │ │
-│  └───────────────────────────────────────────────────┘ │
-└──────────────┼─────────────────────────────────────────┘
-               │
-    ┌──────────┴──────────┐
-    │   AWS 服务           │
-    │  Bedrock  DynamoDB  │
-    │  S3  SSM  ECR  EFS  │
-    └─────────────────────┘
+                        互联网
+                          |
+                    ┌─────┴─────┐
+                    │    ALB    │ (Ingress, HTTPS)
+                    └─────┬─────┘
+                          |
+┌─────────────────────────┼────────────────────────────┐
+│  EKS 集群               |                            │
+│                         |                            │
+│  ┌──────────────────────┼──────────────────────────┐ │
+│  │  openclaw 命名空间    |                          │ │
+│  │                      |                          │ │
+│  │  ┌───────────────────┴──┐  ┌──────────────────┐ │ │
+│  │  │  管理控制台           │  │ OpenClawInstance  │ │ │
+│  │  │  (FastAPI + React)   │  │ (Operator 管理)   │ │ │
+│  │  │  Helm Chart 部署     │  │ StatefulSet+Svc   │ │ │
+│  │  │  Pod Identity → AWS  │  │ +PVC (EFS)        │ │ │
+│  │  └──────────────────────┘  └──────────────────┘ │ │
+│  └──────────────────────────────────────────────────┘ │
+│                                                        │
+│  ┌────────────────────────────────────────────────────┐│
+│  │  openclaw-operator-system 命名空间                  ││
+│  │  OpenClaw Operator（监听 CRD → 创建 K8s 资源）      ││
+│  └────────────────────────────────────────────────────┘│
+└────────────────────────────┬───────────────────────────┘
+                             │
+                  ┌──────────┴──────────┐
+                  │    AWS 服务          │
+                  │  Bedrock   DynamoDB │
+                  │  S3   SSM   ECR    │
+                  │  EFS  ACM   WAF    │
+                  └─────────────────────┘
 ```
 
 ### 运行时对比
 
-| 运行时 | 隔离级别 | 默认存储 | 镜像来源 |
-|--------|---------|---------|---------|
-| **EKS Pod** | cgroups/命名空间 | EFS | ghcr.io（全球）/ ECR 镜像（中国） |
+| 运行时 | 隔离级别 | 存储 | 镜像来源 |
+|--------|---------|------|---------|
+| **EKS Pod** | cgroups / 命名空间 | EFS | ghcr.io（全球）/ ECR 镜像（中国） |
 | **EKS + Kata** | Firecracker 微虚拟机 | EFS | 同上，加 `runtimeClass: kata-qemu` |
-| **ECS Fargate** | Fargate 微虚拟机 | EFS 或 S3 同步 | 私有 ECR |
+| **ECS Fargate** | Fargate 微虚拟机 | EFS 或 S3 | 私有 ECR |
 | **AgentCore** | Firecracker 微虚拟机 | Session Storage | 内置 |
 
 ---
@@ -335,9 +426,9 @@ bash eks/scripts/integration-test.sh \
 
 生产环境如有不可信代码执行需求，建议启用 Kata Containers（`enable_kata = true`）。
 
-### Pod Identity vs IRSA
+### Pod Identity IAM 权限范围
 
-本部署使用 EKS Pod Identity（比 IRSA 更简单——无需 OIDC 提供商）。IAM 权限范围：
+管理控制台使用 EKS Pod Identity，遵循最小权限原则：
 
 - **DynamoDB**：仅对企业数据表读写
 - **S3**：仅对工作空间存储桶读写
@@ -346,28 +437,56 @@ bash eks/scripts/integration-test.sh \
 - **ECR**：镜像拉取（只读）
 - **无 Bedrock 权限**——Agent 通过自身 IRSA 角色调用模型
 
+### Ingress 安全
+
+Helm Chart 的 ALB Ingress 支持：
+- 通过 ACM 证书启用 HTTPS（`ingress.annotations.alb.ingress.kubernetes.io/certificate-arn`）
+- HTTP 自动跳转 HTTPS（默认启用）
+- WAFv2 集成（`ingress.annotations.alb.ingress.kubernetes.io/wafv2-acl-arn`）
+
+生产环境建议始终使用自定义域名 + HTTPS，并考虑启用 WAFv2。
+
 ---
 
 ## 故障排查
 
 ### Pod `ImagePullBackOff`（中国区域）
 
-镜像无法从 ghcr.io / Docker Hub 拉取。部署实例时设置 `globalRegistry`：
+镜像无法从 ghcr.io / Docker Hub 拉取。两种修复方式：
 
 ```bash
-# API 方式
+# 方式 1：部署实例时指定 globalRegistry
 curl -X POST .../deploy -d '{"globalRegistry": "中国区ECR地址"}'
 
-# 或设置管理控制台环境变量（全局生效）
-kubectl -n openclaw set env deployment/admin-console OPENCLAW_REGISTRY=中国区ECR地址
+# 方式 2：在 Helm 中全局设置 OPENCLAW_REGISTRY（所有部署生效）
+helm upgrade admin-console enterprise/admin-console/chart \
+  --namespace openclaw --reuse-values \
+  --set openclawRegistry=中国区ECR地址
 ```
 
 ### Pod `Pending`（PVC 未绑定）
 
-未设置默认 StorageClass。Terraform 会自动将 EFS 设为默认。手动部署的集群需执行：
+未设置默认 StorageClass。Terraform 自动将 EFS 设为默认。手动部署的集群需执行：
 
 ```bash
-kubectl annotate storageclass efs-sc storageclass.kubernetes.io/is-default-class=true
+kubectl annotate storageclass efs-sc \
+  storageclass.kubernetes.io/is-default-class=true
+```
+
+### Ingress 未创建 ALB
+
+检查 AWS Load Balancer Controller 是否运行：
+
+```bash
+kubectl get deployment -n kube-system aws-load-balancer-controller
+```
+
+如未安装，Terraform 中设置 `enable_alb_controller = true`，或手动安装：
+
+```bash
+helm repo add eks https://aws.github.io/eks-charts
+helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+  -n kube-system --set clusterName=集群名称
 ```
 
 ### Operator 未检测到
@@ -385,44 +504,15 @@ kubectl get deployment -n openclaw-operator-system
 kubectl get pods -n kube-system -l app.kubernetes.io/name=eks-pod-identity-agent
 
 # 检查关联
-aws eks list-pod-identity-associations --cluster-name 集群名称 --namespace openclaw --region 区域
+aws eks list-pod-identity-associations \
+  --cluster-name 集群名称 --namespace openclaw --region 区域
 ```
 
 ### 管理控制台 K8s API 403
 
-管理控制台的 ServiceAccount 需要 ClusterRole。Terraform 会自动创建。手动部署时需要执行：
+Terraform 和独立部署脚本均通过 Helm Chart 自动创建 RBAC。如手动安装后出现 403，重新执行 Helm 安装即可：
 
 ```bash
-kubectl apply -f - <<EOF
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: admin-console
-rules:
-  - apiGroups: ["openclaw.rocks"]
-    resources: ["openclawinstances", "openclawselfconfigs"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: [""]
-    resources: ["pods", "pods/log", "services", "serviceaccounts", "namespaces"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: ["apps"]
-    resources: ["deployments", "statefulsets"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: ["apiextensions.k8s.io"]
-    resources: ["customresourcedefinitions"]
-    verbs: ["get", "list"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: admin-console
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: admin-console
-subjects:
-  - kind: ServiceAccount
-    name: admin-console
-    namespace: openclaw
-EOF
+helm upgrade admin-console enterprise/admin-console/chart \
+  --namespace openclaw --reuse-values --set rbac.create=true
 ```
