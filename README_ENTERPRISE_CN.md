@@ -11,17 +11,17 @@
 
 大多数企业 AI 部署按席位收费或为每位员工分配专用计算资源。AgentCore Firecracker 微虚拟机彻底改变了经济模型 —— **你无需预分配 CPU 或内存，无需选择实例规格。AgentCore 按需为每次调用分配精确资源，按秒计费。**
 
-**AgentCore pricing (us-west-2):**
-- CPU: $0.0895 / vCPU-hour — **$0 when idle** (no CPU charge between invocations)
-- Memory: $0.00945 / GB-hour — the only idle cost, and it's tiny
+**AgentCore 定价（us-west-2）：**
+- CPU：$0.0895 / vCPU-小时 —— **空闲时 $0**（调用间无 CPU 费用）
+- 内存：$0.00945 / GB-小时 —— 唯一的空闲成本，极低
 
-**50 employees, 8-hour workday sessions (us-west-2):**
+**50 名员工，每天 8 小时会话（us-west-2）：**
 
 | | Dedicated EC2 per Employee | ChatGPT Team | **OpenClaw on AgentCore** |
 |---|---|---|---|
-| 50 employees | 50 × $52 = **$2,600/mo** | 50 × $25 = **$1,250/mo** | **~$100-150/mo** |
-| What you pay for | 24/7, whether anyone's chatting or not | Per seat, fixed | Only invocation CPU + idle session memory |
-| Idle cost per employee | $52/mo (full EC2 running) | $25/mo (subscription) | **~$0.08/day** (1 GB memory × 8 hr) |
+| 50 名员工 | 50 × $52 = **$2,600/月** | 50 × $25 = **$1,250/月** | **约 $100-150/月** |
+| 付费内容 | 全天候运行，无论是否有人聊天 | 按席位固定 | 仅调用 CPU + 空闲会话内存 |
+| 每员工空闲成本 | $52/月（EC2 全天运行） | $25/月（订阅） | **约 $0.08/天**（1 GB 内存 × 8 小时） |
 
 **计算：** 50 员工 × 22 工作日 × $0.08 闲置/天 = 约 $88/月内存成本。加上实际对话时的 CPU（约 $20-50/月）= **AgentCore 总成本约 $100-150/月。** 加上网关基础设施（见下方[成本估算](#成本估算)）为完整费用。
 
@@ -33,38 +33,38 @@
 
 ### Serverless（AgentCore）— 默认
 
-| | Behavior |
+| | 行为 |
 |-|---------|
-| **Cold start** | ~6s first message — Firecracker microVM + SOUL assembly + Bedrock |
-| **Session resume** | ~2-3s — Session Storage restores workspace, skips S3 download |
-| **Warm session** | Near-instant — microVM stays active during a conversation |
-| **Idle cost** | Memory only ($0.00945/GB-hour). CPU = $0 when idle |
-| **Session Storage** | Workspace files persist across microVM stop/resume (1 GB per session). No S3 sync needed for agent-side persistence |
-| **Best for** | Individual employee agents — scales to zero, pay-per-use |
+| **冷启动** | 首条消息约 6 秒 —— Firecracker 微虚拟机 + SOUL 装配 + Bedrock |
+| **会话恢复** | 约 2-3 秒 —— Session Storage 恢复工作空间，跳过 S3 下载 |
+| **热会话** | 近乎即时 —— 对话期间微虚拟机保持活跃 |
+| **空闲成本** | 仅内存（$0.00945/GB-小时）。CPU 空闲时 = $0 |
+| **Session Storage** | 工作空间文件在微虚拟机 stop/resume 之间持久化（每会话 1 GB）。Agent 侧无需 S3 同步 |
+| **适用场景** | 个人员工 Agent —— 缩至零，按使用付费 |
 
 ### Always-on（ECS Fargate）— 管理员切换
 
-| | Behavior |
+| | 行为 |
 |-|---------|
-| **Cold start** | None — container is always running |
-| **Scheduled tasks** | HEARTBEAT fires on schedule (email check every 3 min, daily reports) |
-| **Direct IM** | Container connects directly to Telegram/Discord (dedicated bot token) |
-| **Persistence** | EFS-backed workspace — durable across container restarts |
-| **Best for** | Customer service bots, executive assistants with frequent cron tasks, high-traffic Digital Twins |
+| **冷启动** | 无 —— 容器始终运行 |
+| **定时任务** | HEARTBEAT 按计划触发（每 3 分钟检查邮件、每日报告） |
+| **直连 IM** | 容器直接连接 Telegram/Discord（专用 Bot Token） |
+| **持久化** | EFS 支持的工作空间 —— 容器重启后持久 |
+| **适用场景** | 客服 Bot、频繁定时任务的高管助理、高流量数字孪生 |
 
 ### EKS（Kubernetes）— 容器原生基础设施
 
-| | Behavior |
+| | 行为 |
 |-|---------|
-| **Cold start** | None — pod is always running |
-| **Operator-managed** | OpenClaw Operator watches `OpenClawInstance` CRDs → StatefulSet + Service + PVC |
-| **Persistence** | EFS-backed PVC (default StorageClass) — durable across pod restarts |
-| **Cluster management** | Discover and associate EKS clusters from the Admin Console (Settings → EKS) |
-| **Internet access** | ALB Ingress (enabled by default in Terraform), custom domain + HTTPS via ACM |
-| **Helm chart** | Admin console packaged as Helm chart: ServiceAccount, RBAC, Deployment, Service, Ingress |
-| **China region** | `build-and-mirror.sh` mirrors operator images to China ECR; `globalRegistry` CRD field rewrites all image registries |
-| **Deploy API** | Full infra configuration: model, CPU/memory, storage, runtime class (Kata), chromium sidecar, backup, node selector, tolerations |
-| **Best for** | Teams already running on Kubernetes, multi-cluster deployments, Graviton/GPU workloads, AWS China regions |
+| **冷启动** | 无 —— Pod 始终运行 |
+| **Operator 管理** | OpenClaw Operator 监听 `OpenClawInstance` CRD → StatefulSet + Service + PVC |
+| **持久化** | EFS PVC（默认 StorageClass）—— Pod 重启后持久 |
+| **集群管理** | 在管理控制台发现并关联 EKS 集群（设置 → EKS） |
+| **互联网访问** | ALB Ingress（Terraform 默认启用），自定义域名 + HTTPS（ACM 证书） |
+| **Helm Chart** | 管理控制台打包为 Helm Chart：ServiceAccount、RBAC、Deployment、Service、Ingress |
+| **中国区域** | `build-and-mirror.sh` 同步 Operator 镜像至中国区 ECR；`globalRegistry` CRD 字段重写所有镜像仓库 |
+| **部署 API** | 完整基础设施配置：模型、CPU/内存、存储、运行时类（Kata）、Chromium Sidecar、备份、节点选择器、容忍度 |
+| **适用场景** | 已在 Kubernetes 上运行的团队、多集群部署、Graviton/GPU 工作负载、AWS 中国区域 |
 
 管理员在 **Agent Factory** 中创建 Agent 时选择部署模式。Agent Factory 显示三个运行时标签页（Serverless、ECS、EKS），包含实时实例状态。EKS 标签页包含 **Deploy Agent** 弹窗，提供完整的基础设施配置选项。
 
@@ -76,59 +76,59 @@
 
 ### 五层安全模型
 
-| Layer | Mechanism | Bypassed by prompt injection? |
+| 层级 | 机制 | 提示词注入能否绕过？ |
 |-------|-----------|-------------------------------|
-| L1 — Prompt | SOUL.md rules ("Finance never uses shell") | ⚠️ Theoretically possible |
-| L2 — Application | Skills manifest `allowedRoles`/`blockedRoles` | ⚠️ Code bug risk |
-| **L3 — IAM** | **Runtime role has no permission on target resource** | **Impossible** |
-| **L4 — Compute** | **Isolation boundary per agent (see table below)** | **Impossible** |
-| **L5 — Guardrail** | **Bedrock Guardrail checks every input + output: topic denial, PII filtering, compliance policies** | **Impossible — AWS-managed, semantic AI layer** |
+| L1 — 提示词 | SOUL.md 规则（"财务不使用 shell"） | ⚠️ 理论上可能 |
+| L2 — 应用层 | Skills 清单 `allowedRoles`/`blockedRoles` | ⚠️ 代码缺陷风险 |
+| **L3 — IAM** | **运行时角色对目标资源无权限** | **不可能** |
+| **L4 — 计算** | **每个 Agent 独立隔离边界（见下表）** | **不可能** |
+| **L5 — 护栏** | **Bedrock Guardrail 检查每个输入+输出：话题拒绝、PII 过滤、合规策略** | **不可能 — AWS 托管语义 AI 层** |
 
 L1-L2 是软层（提示词/应用层）。L3-L5 是硬性基础设施边界 —— 无论多复杂的提示词注入、越狱或工具调用滥用都无法绕过。实习生的 Agent IAM 角色确实无法读取高管 S3 桶 —— 即使 LLM 尝试也不行。即使能读取，Guardrail 也会在输出到达用户之前拦截。
 
 ### L4 计算隔离：运行时对比
 
-The three runtimes provide different levels of compute isolation. Choose based on your security posture:
+三种运行时提供不同级别的计算隔离。根据安全要求选择：
 
 | | AgentCore (Serverless) | ECS (Fargate) | EKS (Pods) | EKS + Kata Containers |
 |---|---|---|---|---|
-| **Isolation** | Firecracker microVM | Fargate microVM | Linux cgroups/namespaces | Firecracker microVM (Kata) |
-| **Boundary** | Hypervisor (KVM) | Hypervisor (KVM) | Kernel (shared) | Hypervisor (KVM) |
-| **Kernel** | Dedicated per invocation | Dedicated per task | **Shared with node** | Dedicated per pod |
-| **Prompt injection → escape?** | **Impossible** — microVM boundary | **Impossible** — Fargate boundary | ⚠️ Kernel exploit theoretically possible (rare) | **Impossible** — microVM boundary |
-| **Cross-tenant visibility** | None — separate microVMs | None — separate tasks | ⚠️ Shared node, requires NetworkPolicy | None — separate microVMs |
-| **Best for** | Maximum isolation, compliance | Persistent agents, moderate security | Dev/test, cost-optimized | Production K8s with compliance |
+| **隔离方式** | Firecracker 微虚拟机 | Fargate 微虚拟机 | Linux cgroups/命名空间 | Firecracker 微虚拟机（Kata） |
+| **边界** | Hypervisor (KVM) | Hypervisor (KVM) | 内核（共享） | Hypervisor (KVM) |
+| **内核** | 每次调用独立 | 每个任务独立 | **与节点共享** | 每个 Pod 独立 |
+| **提示词注入 → 逃逸？** | **不可能** — 微虚拟机边界 | **不可能** — Fargate 边界 | ⚠️ 内核漏洞理论上可能（罕见） | **不可能** — 微虚拟机边界 |
+| **跨租户可见性** | 无 — 独立微虚拟机 | 无 — 独立任务 | ⚠️ 共享节点，需 NetworkPolicy | 无 — 独立微虚拟机 |
+| **适用场景** | 最大隔离，合规 | 持久化 Agent，中等安全 | 开发/测试，成本优化 | 生产 K8s + 合规 |
 
 **关键结论：** AgentCore 和 ECS Fargate 通过 Firecracker 微虚拟机为每个 Agent 提供 **硬件级** 隔离 —— 与 AWS Lambda 使用的技术相同。LLM 驱动的 Agent 无法观察、干扰或逃逸到另一个 Agent 的执行环境，无论提示词注入多复杂。
 
 标准 EKS Pod 共享宿主机内核。虽然 Kubernetes 命名空间、cgroups 和 NetworkPolicy 为大多数工作负载提供了强隔离，但理论上的内核漏洞可能穿越边界。对于需要与 AgentCore 相同隔离保证的生产 EKS 部署：
 
-- **Enable Kata Containers** (`enable_kata = true` in Terraform) — runs each pod in its own Firecracker microVM on bare-metal nodes, restoring hypervisor-level isolation
-- **Use dedicated node groups** per security tier — prevent co-scheduling of different trust levels
-- **Enforce NetworkPolicy** — the OpenClaw Operator creates per-instance NetworkPolicy by default
+- **启用 Kata Containers**（Terraform 中 `enable_kata = true`）—— 每个 Pod 在裸金属节点上的独立 Firecracker 微虚拟机中运行，恢复 Hypervisor 级隔离
+- **使用专用节点组** —— 按安全级别分组，防止不同信任级别混合调度
+- **强制 NetworkPolicy** —— OpenClaw Operator 默认为每个实例创建 NetworkPolicy
 
 ### 附加控制
 
-- No public ports (SSM only for EC2, ClusterIP for EKS)
-- IAM roles throughout, no hardcoded credentials
-- Gateway token in SSM SecureString, never on disk
-- VPC isolation between runtimes
-- Pod Identity (EKS) or IRSA for least-privilege AWS access
-- RBAC: admin/manager/employee with scope-limited visibility
+- 无公开端口（EC2 仅 SSM，EKS 使用 ClusterIP）
+- 全程 IAM 角色，无硬编码凭证
+- Gateway Token 存于 SSM SecureString，不落盘
+- 运行时间 VPC 隔离
+- Pod Identity（EKS）或 IRSA 实现最小权限 AWS 访问
+- RBAC：admin/manager/employee 权限范围受限
 
 ---
 
 ## 从第一天起可审计、可治理
 
-| Control | What IT Gets |
+| 控制项 | IT 获得什么 |
 |---------|-------------|
-| **SOUL Editor** | Global rules locked by IT. Finance cannot touch shell. Engineering cannot leak PII. Employees cannot override the global layer. |
-| **Skill Governance** | 26 skills with `allowedRoles`/`blockedRoles`. Employees cannot install unapproved skills. |
-| **Audit Center** | Every invocation, tool call, permission denial, SOUL change, and IM pairing → DynamoDB |
-| **Usage & Cost** | Per-employee, per-department breakdown. Daily/weekly/monthly trends with model pricing |
-| **IM Management** | Every employee's connected IM accounts visible to admin. One-click revoke. |
-| **Security Center** | Live ECR images, IAM roles, VPC security groups with AWS Console deep links |
-| **RBAC** | Admin (full org) · Manager (department-scoped) · Employee (portal only) |
+| **SOUL 编辑器** | IT 锁定全局规则。财务不能使用 shell。工程不能泄露 PII。员工不能覆盖全局层。 |
+| **技能治理** | 26 个技能带 `allowedRoles`/`blockedRoles`。员工不能安装未批准的技能。 |
+| **审计中心** | 每次调用、工具调用、权限拒绝、SOUL 变更和 IM 配对 → DynamoDB |
+| **用量与成本** | 按员工、按部门分解。每日/每周/每月趋势及模型定价 |
+| **IM 管理** | 管理员可见每位员工的 IM 连接。一键撤销。 |
+| **安全中心** | 实时 ECR 镜像、IAM 角色、VPC 安全组及 AWS 控制台深链接 |
+| **RBAC** | Admin（全组织）· Manager（部门范围）· Employee（仅门户） |
 
 ---
 
@@ -139,13 +139,13 @@ The three runtimes provide different levels of compute isolation. Choose based o
 
 ### 旗舰功能
 
-| Feature | What It Does |
+| 功能 | 说明 |
 |---------|-------------|
-| **Digital Twin** | Employee turns on a public link. Anyone with the URL can chat with their AI agent while they're away — agent responds using their SOUL, memory, and expertise. Twin sessions are isolated from the employee's main session |
-| **Always-on Agents** | Admin toggles any agent to persistent ECS Fargate mode. Enables scheduled tasks (email every 3 min), direct IM bot connections, instant response. Same image, same SOUL — just a deployment mode switch |
-| **Session Storage** | AgentCore persists workspace files across microVM stop/resume cycles. No S3 re-download on session resume. Combined with `StopRuntimeSession` API for admin-triggered config refresh |
-| **Three-Layer SOUL** | Global (IT) → Position (dept admin) → Personal (employee). 3 stakeholders, 3 layers, one merged identity. Same LLM — Finance Analyst vs SDE have completely different personalities and permissions |
-| **Self-Service IM Pairing** | Employee scans QR code from Portal → connects Telegram / Feishu / Discord in 30 seconds. No IT ticket, no admin approval |
+| **数字孪生** | 员工开启公开链接。任何人通过 URL 可在员工不在时与其 AI Agent 对话 —— Agent 使用员工的 SOUL、记忆和专业知识回复。孪生会话与员工主会话隔离 |
+| **Always-on Agent** | 管理员将任何 Agent 切换到持久化 ECS Fargate 模式。启用定时任务（每 3 分钟检查邮件）、直连 IM Bot、即时响应。相同镜像、相同 SOUL —— 仅部署模式切换 |
+| **Session Storage** | AgentCore 在微虚拟机 stop/resume 周期间持久化工作空间文件。会话恢复无需重新下载 S3。配合 `StopRuntimeSession` API 实现管理员触发的配置刷新 |
+| **三层 SOUL** | 全局（IT）→ 职位（部门管理）→ 个人（员工）。3 利益相关方，3 层，一个合并身份。相同 LLM —— 财务分析师 vs SDE 拥有完全不同的个性和权限 |
+| **自助 IM 配对** | 员工在门户扫描二维码 → 30 秒连接 Telegram / 飞书 / Discord。无需 IT 工单，无需管理员审批 |
 | **Multi-Runtime Architecture** | Standard tier (Nova 2 Lite, scoped IAM) vs Executive tier (Claude Sonnet 4.6, full access). Different Docker images, different models, different IAM roles — infrastructure-level isolation |
 | **Bedrock Guardrails (L5)** | Assign any Bedrock Guardrail to a Runtime from Security Center UI. Topic denial, PII filtering, and compliance policies wrap every user input and agent output — no OpenClaw source code changes needed. Standard employees get blocked; exec tier is unrestricted. Full block audit trail in Audit Center. |
 | **Org Directory KB** | Company directory (every employee, R&R, contact, agent capabilities) seeded from org data and injected into every agent — agents know who to contact and can draft messages for you |
@@ -163,13 +163,13 @@ The three runtimes provide different levels of compute isolation. Choose based o
 
 > **https://openclaw.awspsa.com**
 >
-> A real running instance with 15 departments, 12 positions, 27 employees, 29 AI agents, 5 IM channels (Telegram, Feishu, Discord + Portal), multi-runtime architecture, and always-on ECS Fargate agents — all backed by DynamoDB + S3 on AWS.
+> 一个真实运行的实例，包含 15 departments, 12 positions, 27 employees, 29 AI agents, 5 IM channels (Telegram, Feishu, Discord + Portal), multi-runtime architecture, and always-on ECS Fargate agents — all backed by DynamoDB + S3 on AWS.
 >
-> **Everything here is real.** Every button works. Every chart reads from real data. Every agent runs on Bedrock AgentCore in isolated Firecracker microVMs.
+> **这里的一切都是真实的。** 每个按钮都有效。每个图表读取真实数据。每个 Agent 在隔离的 Firecracker 微虚拟机中运行。
 >
-> **Try the Digital Twin:** Login as any employee → Portal → My Profile → Toggle **Digital Twin** ON → get a public URL → open it in an incognito window and chat with the AI version of that employee.
+> **试试数字孪生：** 以任何员工登录 → 门户 → 我的档案 → 开启 **数字孪生** → 获取公开 URL → 在隐身窗口打开并与该员工的 AI 版本对话。
 >
-> Need a demo account? Contact [wjiad@aws](mailto:wjiad@amazon.com) to get access.
+> 需要演示账户？ 联系 [wjiad@aws](mailto:wjiad@amazon.com) 获取访问权限。
 
 ### 截图
 
@@ -191,11 +191,11 @@ The three runtimes provide different levels of compute isolation. Choose based o
 
 OpenClaw 是最强大的开源 AI Agent 平台之一（200k+ GitHub Stars）。它擅长个人生产力：将 AI 连接到 WhatsApp、Telegram、Discord，运行浏览器自动化，管理日历。但企业部署需要：
 
-- **Multi-tenant isolation** — each employee gets their own agent with separate identity, memory, and permissions
-- **Role-based access control** — interns can't run shell commands, finance can't access engineering data
-- **Centralized governance** — IT controls agent behavior, skills, and model selection across the organization
-- **Audit & compliance** — every agent action logged, PII detection, data sovereignty
-- **Cost management** — per-department budgets, model routing, usage tracking
+- **多租户隔离** —— 每位员工获得自己的 Agent，具有独立身份、记忆和权限
+- **基于角色的访问控制** —— 实习生不能运行 shell 命令，财务不能访问工程数据
+- **集中治理** —— IT 控制组织范围内的 Agent 行为、技能和模型选择
+- **审计与合规** —— 每个 Agent 操作记录，PII 检测，数据主权
+- **成本管理** —— 按部门预算，模型路由，使用跟踪
 
 ## 解决方案
 
@@ -226,13 +226,13 @@ workspace/
 
 `SESSION_CONTEXT.md` is the access path identity file. It is written **once per cold start** by `workspace_assembler` and encodes exactly which access path triggered this session, verified by the `session_id` prefix the Tenant Router assigns:
 
-| Session Prefix | Access Path | Content Written |
+| 会话前缀 | 访问路径 | 写入内容 |
 |----------------|-------------|-----------------|
-| `emp__emp-id__` | Employee Portal + all bound IM channels (shared session) | Authenticated user name, "Verification: Confirmed" |
+| `emp__emp-id__` | 员工门户 + 所有绑定 IM 渠道（共享会话） | 已认证用户名，"验证：已确认" |
 | `pt__emp-id__` | Portal (legacy alias, same behavior as `emp__`) | Same as above |
-| `pgnd__emp-id__` | Playground — IT admin testing as this employee | "Admin Test Session, read-only memory" |
-| `twin__emp-id__` | Digital Twin — external caller, no auth required | "Caller unverified, conversations visible to employee in Portal" |
-| `admin__...` | IT Admin Assistant | "Authorized IT Administrator" |
+| `pgnd__emp-id__` | Playground — IT 管理员以该员工身份测试 | "管理员测试会话，只读内存" |
+| `twin__emp-id__` | 数字孪生 — 外部访问者，无需认证 | "访问者未验证，对话对员工在门户中可见" |
+| `admin__...` | IT 管理员助手 | "已授权 IT 管理员" |
 | `tg__`, `dc__`, etc. | Raw IM fallback (unresolved user, before pairing) | "Standard Session" |
 
 **Why this matters:** Without SESSION_CONTEXT.md, the agent cannot distinguish Portal from Playground from Digital Twin — all three would access the same workspace and respond identically. With it, Playground explicitly tells the agent not to write back to employee memory, and Digital Twin tells the agent the caller is unverified and the conversation is visible to the represented employee.
@@ -420,7 +420,7 @@ The org directory KB (seeded via `seed_knowledge_docs.py`, refreshed by re-runni
 
 ## 网关架构：一个 Bot，服务所有员工
 
-The OpenClaw Gateway serves as the unified IM connection layer for the entire organization. In the reference deployment, it runs on a single EC2 instance; production environments can scale horizontally behind a load balancer.
+OpenClaw Gateway 作为整个组织的统一 IM 连接层。 在参考部署中，它运行在单个 EC2 实例上；生产环境可在负载均衡器后水平扩展。
 
 ```
 IT Admin (one-time setup):
@@ -451,7 +451,7 @@ Step 5: Employee chats with their AI agent directly in their IM app
 
 ## 核心功能
 
-| Feature | How It Works |
+| 功能 | 工作原理 |
 |---------|-------------|
 | **Digital Twin** | Employee toggles ON → gets a public URL. Anyone chats with their AI agent, no login required. Agent uses employee's SOUL + memory. Toggle OFF revokes instantly |
 | **Always-on Agents** | Admin toggles any agent to ECS Fargate mode. Same Docker image, persistent container with EFS workspace. Enables scheduled tasks, direct IM bot, instant response. Tenant Router routes assigned employees to Fargate task VPC IP via SSM |
@@ -472,7 +472,7 @@ Step 5: Employee chats with their AI agent directly in their IM app
 
 ## 安全模型
 
-| Layer | Mechanism | Detail |
+| 层级 | 机制 | 详情 |
 |-------|-----------|--------|
 | **Network** | No open ports | SSM port forwarding or CloudFront (origin restricted) |
 | **Credentials** | AWS SSM SecureString | `ADMIN_PASSWORD`, `JWT_SECRET`, Digital Twin tokens encrypted in SSM |
@@ -524,17 +524,17 @@ Step 5: Employee chats with their AI agent directly in their IM app
 
 ### 前置条件
 
-| Requirement | Version | Notes |
+| 要求 | 版本 | 说明 |
 |-------------|---------|-------|
 | AWS CLI | v2.27+ | `bedrock-agentcore-control` requires 2.27+ |
 | Node.js | 18+ | For Admin Console frontend build |
 | Python | 3.10+ | For seed scripts and backend |
 | SSM Plugin | Latest | [Install guide](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) |
 
-> **No local Docker required** — the agent container image is built on the gateway EC2 (ARM64 Graviton) via SSM.
+> **无需本地 Docker** — the agent container image is built on the gateway EC2 (ARM64 Graviton) via SSM.
 
-**AWS requirements:**
-- Bedrock model access: Nova 2 Lite (default) + Anthropic Claude (exec tier + Admin Assistant)
+**AWS 要求：**
+- Bedrock 模型访问权限： Nova 2 Lite (default) + Anthropic Claude (exec tier + Admin Assistant)
 - Bedrock AgentCore available in: `us-east-1`, `us-west-2`
 - IAM permissions: `cloudformation:*`, `ec2:*`, `iam:*`, `ecr:*`, `s3:*`, `ssm:*`, `bedrock:*`, `dynamodb:*`
 
@@ -545,7 +545,7 @@ cd enterprise           # from repo root
 cp .env.example .env    # copy config template
 ```
 
-Open `.env` and fill in the required values:
+打开 `.env` 并填写必需值：
 
 ```bash
 STACK_NAME=openclaw-enterprise   # your stack name
@@ -561,21 +561,21 @@ ADMIN_PASSWORD=your-password     # admin console login password
 # WORKSPACE_BUCKET_NAME=openclaw-tenants-123456789-staging
 ```
 
-Then run the deploy script — it handles everything, **including the Docker build on the gateway EC2 (no local Docker required)**:
+然后运行部署脚本 — it handles everything, **including the Docker build on the gateway EC2 (no local Docker required)**:
 
 ```bash
 bash deploy.sh
 # ~15 minutes total: CloudFormation → EC2 Docker build → AgentCore Runtime → DynamoDB seed
 ```
 
-To re-deploy after code changes without rebuilding the Docker image or re-seeding:
+代码变更后重新部署，无需重建 Docker 镜像或重新初始化数据：
 
 ```bash
 bash deploy.sh --skip-build   # update infra only, skip Docker build
 bash deploy.sh --skip-seed    # update infra + image, skip DynamoDB
 ```
 
-**What `deploy.sh` does automatically (end-to-end):**
+**`deploy.sh` 自动完成的工作（端到端）：**
 1. Deploys CloudFormation (EC2, ECR, S3, IAM — creates or updates)
 2. Packages source code → uploads to S3 → **triggers Docker build on the gateway EC2 via SSM** (ARM64 Graviton, no local Docker needed)
 3. Creates or updates AgentCore Runtime
@@ -588,7 +588,7 @@ bash deploy.sh --skip-seed    # update infra + image, skip DynamoDB
 10. Configures systemd services and starts all components
 11. Adds ECS→SSM VPC endpoint security group rule (if VPC endpoints exist)
 
-After deployment, get the instance ID and S3 bucket:
+部署后获取实例 ID 和 S3 桶：
 
 ```bash
 STACK_NAME="openclaw-enterprise"   # match your .env
@@ -785,14 +785,14 @@ Employees self-service pair via Portal → Connect IM (QR code). No admin approv
 ## 测试验证
 
 ### 1. SOUL Injection (core differentiator)
-Login as **Carol Zhang** (Finance) → Chat → "Who are you?" → **"ACME Corp Finance Analyst"**
-Login as **Ryan Park** (SDE) → Chat → "Who are you?" → **"ACME Corp Software Engineer"**
-Same LLM. Completely different identities.
+以 **Carol Zhang**（财务）登录 → Chat → "Who are you?" → **"ACME Corp Finance Analyst"**
+以 **Ryan Park**（SDE）登录 → Chat → "Who are you?" → **"ACME Corp Software Engineer"**
+相同 LLM。完全不同的身份。
 
 ### 2. Digital Twin
-Login as any employee → **Portal → My Profile → Digital Twin toggle**
-Turn ON → copy the URL → open in incognito → chat with the AI version of that employee
-Turn OFF → incognito tab gets 404 immediately
+以任何员工登录 → **Portal → My Profile → Digital Twin toggle**
+开启 → 复制 URL → 在隐身窗口打开 → 与该员工的 AI 版本对话
+关闭 → 隐身标签页立即返回 404
 
 ### 3. Org Directory (Knowledge Base)
 Ask any agent: *"Who should I contact for a code review?"* or *"What does Marcus Bell do?"*
@@ -874,7 +874,7 @@ To add a new KB: Admin Console → Knowledge Base → upload Markdown → Assign
 
 ## 环境变量
 
-| Variable | Required | Description |
+| 变量 | 必填 | 说明 |
 |----------|----------|-------------|
 | `ADMIN_PASSWORD` | Yes | Login password. Production: store in SSM SecureString |
 | `JWT_SECRET` | Yes | JWT signing key. Generate: `openssl rand -hex 32` |
@@ -889,46 +889,46 @@ To add a new KB: Admin Console → Knowledge Base → upload Markdown → Assign
 
 ## 示例组织
 
-| | Count | Details |
+| | 数量 | 详情 |
 |-|-------|---------|
-| Departments | 15 | 7 top-level + 8 sub-departments including Admin Lab |
-| Positions | 12 | SA, SDE, DevOps, QA, AE, PM, FA, HR, CSM, Legal, Executive, Platform Admin |
-| Employees | 27 | Each with workspace files in S3 |
-| Agents | 29 | 28 serverless + 1 always-on |
-| IM Channels | 5 | Telegram, Feishu, Discord, Portal, + always-on |
-| Skills | 26 | Role-scoped skill packages |
-| Knowledge Docs | 14 | 11 topic KBs + company-directory.md (org directory, auto-assigned to all positions) |
-| SOUL Templates | 12 | 1 global + 11 position-specific |
-| RBAC Roles | 3 | Admin, Manager, Employee |
+| 部门 | 15 | 7 个顶层 + 8 个子部门（含 Admin Lab） |
+| 职位 | 12 | SA、SDE、DevOps、QA、AE、PM、FA、HR、CSM、Legal、Executive、Platform Admin |
+| 员工 | 27 | 每人在 S3 有工作空间文件 |
+| Agent | 29 | 28 个 Serverless + 1 个 Always-on |
+| IM 渠道 | 5 | Telegram、飞书、Discord、Portal + Always-on |
+| 技能 | 26 | 按角色范围的技能包 |
+| 知识文档 | 14 | 11 个主题 KB + company-directory.md（组织目录，自动分配到所有职位） |
+| SOUL 模板 | 12 | 1 个全局 + 11 个职位特定 |
+| RBAC 角色 | 3 | Admin、Manager、Employee |
 
 ## 成本估算
 
 ### AgentCore 成本（50 员工，Serverless）
 
-| Component | Monthly Cost | Notes |
+| 组件 | 月费 | 说明 |
 |-----------|-------------|-------|
-| AgentCore sessions | ~$100-150 | Session memory idle ($88) + invocation CPU (~$20-50) |
-| DynamoDB | ~$1 | Pay-per-request |
-| S3 | < $1 | Workspaces, KBs, org directory |
-| Bedrock (Nova 2 Lite) | ~$5-15 | ~100 conversations/day |
+| AgentCore 会话 | 约 $100-150 | 会话内存空闲（$88）+ 调用 CPU（约 $20-50） |
+| DynamoDB | 约 $1 | 按请求付费 |
+| S3 | < $1 | 工作空间、知识库、组织目录 |
+| Bedrock（Nova 2 Lite） | 约 $5-15 | 每天约 100 次对话 |
 
 ### Always-on Agent（ECS Fargate，可选）
 
-| Component | Monthly Cost | Notes |
+| 组件 | 月费 | 说明 |
 |-----------|-------------|-------|
-| Fargate per agent | ~$17 | 0.5 vCPU + 1 GB, ARM64 Graviton, 24/7 |
-| EFS | ~$7 | Elastic throughput + storage |
+| 每 Agent Fargate | 约 $17 | 0.5 vCPU + 1 GB，ARM64 Graviton，全天候 |
+| EFS | 约 $7 | 弹性吞吐 + 存储 |
 
 ### 网关基础设施
 
-The gateway layer (Tenant Router, H2 Proxy, Admin Console) runs on EC2 or equivalent compute. A single `c7g.large` (~$52/mo) is sufficient for development and small deployments. Production environments should use HA architecture (ALB + Auto Scaling Group or ECS) based on the customer's availability requirements.
+网关层（租户路由、H2 代理、管理控制台）运行在 EC2 或等效计算资源上。 单个 `c7g.large`（约 $52/月）足以支持开发和小规模部署。 生产环境应使用高可用架构 (ALB + Auto Scaling Group or ECS) based on the customer's availability requirements.
 
 ### 总计估算
 
-| Scenario | AgentCore | Always-on | Gateway | Bedrock | **Total** |
+| 场景 | AgentCore | Always-on | 网关 | Bedrock | **总计** |
 |----------|-----------|-----------|---------|---------|-----------|
-| 50 employees, serverless only | $100-150 | — | ~$52+ | ~$10 | **~$160-220/mo** |
-| + 2 always-on agents | $100-150 | $48 | ~$52+ | ~$10 | **~$210-260/mo** |
+| 50 员工，仅 Serverless | $100-150 | — | ~$52+ | ~$10 | **~$160-220/mo** |
+| + 2 个 Always-on Agent | $100-150 | $48 | ~$52+ | ~$10 | **~$210-260/mo** |
 
 vs ChatGPT Team ($25 × 50 = $1,250/mo) or Copilot ($30 × 50 = $1,500/mo).
 
@@ -936,17 +936,17 @@ vs ChatGPT Team ($25 × 50 = $1,250/mo) or Copilot ($30 × 50 = $1,500/mo).
 
 ## 竞品对比
 
-| Capability | ChatGPT Team | Microsoft Copilot | OpenClaw Enterprise |
+| 能力 | ChatGPT Team | Microsoft Copilot | OpenClaw 企业版 |
 |-----------|-------------|-------------------|-------------------|
-| Per-employee identity | ❌ Same for all | ❌ Same for all | ✅ 3-layer SOUL per role |
-| Tool permissions per role | ❌ | ❌ | ✅ Plan A + Plan E + L3 IAM |
-| Scheduled tasks / cron | ❌ | ❌ | ✅ Always-on agents (ECS Fargate) |
-| Direct IM bot connection | ❌ | ❌ | ✅ Per-agent Telegram/Discord bot |
-| Digital Twin (public agent URL) | ❌ | ❌ | ✅ Shareable, revocable, isolated session |
-| Session persistence | ❌ Session only | ❌ | ✅ Session Storage + S3 cross-session |
-| Self-service IM pairing | ❌ | ❌ | ✅ QR code, 30 seconds |
-| Self-hosted, data in your VPC | ❌ | ❌ | ✅ Bedrock in your account |
-| Open source | ❌ | ❌ | ✅ OpenClaw + AWS native |
+| 每员工独立身份 | ❌ 所有人相同 | ❌ 所有人相同 | ✅ 每角色三层 SOUL |
+| 按角色工具权限 | ❌ | ❌ | ✅ Plan A + Plan E + L3 IAM |
+| 定时任务 / cron | ❌ | ❌ | ✅ Always-on Agent（ECS Fargate） |
+| 直连 IM Bot | ❌ | ❌ | ✅ 每 Agent Telegram/Discord Bot |
+| 数字孪生（公开 Agent URL） | ❌ | ❌ | ✅ 可分享、可撤销、隔离会话 |
+| 会话持久化 | ❌ Session only | ❌ | ✅ Session Storage + S3 跨会话 |
+| 自助 IM 配对 | ❌ | ❌ | ✅ 二维码，30 秒 |
+| 自托管，数据在您的 VPC | ❌ | ❌ | ✅ Bedrock 在您的账户中 |
+| 开源 | ❌ | ❌ | ✅ OpenClaw + AWS 原生 |
 
 ## 项目结构
 
@@ -994,9 +994,9 @@ enterprise/
 
 ### Always-on Agent 管理（ECS Fargate）
 
-Always-on agents run as **ECS Fargate Services** with EFS-backed persistent workspace and auto-restart on crash. Each task self-registers its private VPC IP in SSM on startup; the Tenant Router reads that SSM entry to route requests. Admin selects deployment mode (Serverless or Always-on) when creating an agent in Agent Factory.
+Always-on Agent 以 **ECS Fargate 服务** 运行 具有 EFS 支持的持久工作空间和崩溃后自动重启。 Each task self-registers its private VPC IP in SSM on startup; the Tenant Router reads that SSM entry to route requests. Admin selects deployment mode (Serverless or Always-on) when creating an agent in Agent Factory.
 
-Start/stop from **Agent Factory → agent detail → deployment mode toggle**, or manually:
+从 **Agent Factory → Agent 详情 → 部署模式切换** 启停，或手动操作：
 
 ```bash
 # Read ECS config from CloudFormation outputs (one-time setup)
@@ -1091,14 +1091,14 @@ sudo systemctl start bedrock-proxy-h2 tenant-router
 
 ### CloudFormation 栈删除在 PrivateSubnet 失败
 
-**Symptom:** `aws cloudformation delete-stack` gets stuck, then reports `DELETE_FAILED` with:
+**症状：** `aws cloudformation delete-stack` gets stuck, then reports `DELETE_FAILED` with:
 ```
 The subnet 'subnet-xxx' has dependencies and cannot be deleted.
 ```
 
-**Cause:** AWS GuardDuty automatically creates managed VPC endpoints in every subnet it monitors. These endpoints block subnet deletion.
+**原因：** AWS GuardDuty automatically creates managed VPC endpoints in every subnet it monitors. These endpoints block subnet deletion.
 
-**Fix:** Find and delete the GuardDuty-managed endpoints before retrying:
+**修复：** Find and delete the GuardDuty-managed endpoints before retrying:
 
 ```bash
 # Find GuardDuty endpoints in the stack's VPC
@@ -1123,24 +1123,24 @@ aws cloudformation delete-stack --stack-name $STACK_NAME --region $REGION
 
 ### `deploy.sh` fails: ECR repo is empty after `--skip-build`
 
-**Symptom:** AgentCore runtime creation fails with "specified image identifier does not exist."
+**症状：** AgentCore runtime creation fails with "specified image identifier does not exist."
 
-**Cause:** `--skip-build` skips the Docker build, but if this is the first deploy of a new stack, the ECR repo will be empty.
+**原因：** `--skip-build` skips the Docker build, but if this is the first deploy of a new stack, the ECR repo will be empty.
 
-**Fix:** Run without `--skip-build` on first deploy. The script builds on the gateway EC2 via SSM — no local Docker needed.
+**修复：** Run without `--skip-build` on first deploy. The script builds on the gateway EC2 via SSM — no local Docker needed.
 
 ### AgentCore returns HTTP 500 on every message
 
-**Cause:** Almost always a wrong `openclaw` npm package version inside the container.
+**原因：** Almost always a wrong `openclaw` npm package version inside the container.
 
-**Check:**
+**检查：**
 ```bash
 aws logs tail /aws/bedrock-agentcore/runtimes/<runtime-id>-DEFAULT --follow
 # Look for: "openclaw returned empty output"
 ```
 
-**Fix:** Rebuild the Docker image. Both `agent-container/Dockerfile` and `exec-agent/Dockerfile` must install `openclaw@2026.3.24` exactly — do not upgrade.
+**修复：** Rebuild the Docker image. Both `agent-container/Dockerfile` and `exec-agent/Dockerfile` must install `openclaw@2026.3.24` exactly — do not upgrade.
 
 ---
 
-Built by [wjiad@aws](mailto:wjiad@amazon.com) · [aws-samples](https://github.com/aws-samples) · Contributions welcome
+构建者：[wjiad@aws](mailto:wjiad@amazon.com) · [aws-samples](https://github.com/aws-samples) · 欢迎贡献
