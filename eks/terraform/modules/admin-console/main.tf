@@ -261,6 +261,30 @@ resource "helm_release" "admin_console" {
     value = var.openclaw_namespace
   }
 
+  # Ingress — enabled by default in Terraform deployments
+  set {
+    name  = "ingress.enabled"
+    value = "true"
+  }
+  set {
+    name  = "ingress.className"
+    value = var.ingress_class
+  }
+  dynamic "set" {
+    for_each = var.ingress_host != "" ? [1] : []
+    content {
+      name  = "ingress.host"
+      value = var.ingress_host
+    }
+  }
+  dynamic "set" {
+    for_each = var.ingress_certificate_arn != "" ? [1] : []
+    content {
+      name  = "ingress.annotations.alb\\.ingress\\.kubernetes\\.io/certificate-arn"
+      value = var.ingress_certificate_arn
+    }
+  }
+
   wait    = true
   timeout = 300
 

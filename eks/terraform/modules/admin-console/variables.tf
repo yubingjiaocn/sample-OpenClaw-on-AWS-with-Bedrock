@@ -53,6 +53,24 @@ variable "partition" {
   default     = "aws"
 }
 
+variable "ingress_class" {
+  description = "Ingress class name (e.g. alb for AWS LB Controller)"
+  type        = string
+  default     = "alb"
+}
+
+variable "ingress_host" {
+  description = "Hostname for the Ingress rule (empty = ALB DNS name, no host-based routing)"
+  type        = string
+  default     = ""
+}
+
+variable "ingress_certificate_arn" {
+  description = "ACM certificate ARN for HTTPS on the ALB (optional)"
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "Tags to apply to all resources"
   type        = map(string)

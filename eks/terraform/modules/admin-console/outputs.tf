@@ -36,3 +36,13 @@ output "port_forward_command" {
   description = "kubectl port-forward command to access the admin console"
   value       = "kubectl -n ${var.openclaw_namespace} port-forward svc/admin-console 8099:8099"
 }
+
+output "ingress_host" {
+  description = "Ingress hostname (if configured)"
+  value       = var.ingress_host
+}
+
+output "ingress_command" {
+  description = "Command to get the ALB DNS name"
+  value       = "kubectl -n ${var.openclaw_namespace} get ingress admin-console -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'"
+}

@@ -143,6 +143,24 @@ variable "admin_console_image_tag" {
   default     = "latest"
 }
 
+variable "admin_console_ingress_class" {
+  description = "Ingress class for admin console (default: alb)"
+  type        = string
+  default     = "alb"
+}
+
+variable "admin_console_ingress_host" {
+  description = "Hostname for admin console Ingress (empty = ALB DNS, no host routing)"
+  type        = string
+  default     = ""
+}
+
+variable "admin_console_certificate_arn" {
+  description = "ACM certificate ARN for admin console HTTPS (optional)"
+  type        = string
+  default     = ""
+}
+
 # --- Agent Sandbox ---
 variable "enable_agent_sandbox" {
   description = "Enable Agent Sandbox CRDs"

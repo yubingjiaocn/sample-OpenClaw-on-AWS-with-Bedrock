@@ -34,8 +34,10 @@ output "bedrock_role_arn" {
 }
 
 output "admin_console_url" {
-  description = "Admin console port-forward command (when enabled)"
-  value       = var.enable_admin_console ? module.admin_console[0].port_forward_command : "Admin console not enabled"
+  description = "Admin console access (ALB URL or port-forward command)"
+  value       = var.enable_admin_console ? (
+    var.admin_console_ingress_host != "" ? "https://${var.admin_console_ingress_host}" : module.admin_console[0].ingress_command
+  ) : "Admin console not enabled"
 }
 
 output "admin_console_ecr" {
