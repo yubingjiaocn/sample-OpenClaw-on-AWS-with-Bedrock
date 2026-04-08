@@ -67,38 +67,17 @@ kubectl -n openclaw patch openclawinstance agent-helpdesk --type=merge \
 
 #### Mirror container images to China ECR
 
-The OpenClaw Operator creates pods that pull images from `ghcr.io` and Docker Hub. These registries are inaccessible or very slow from China. You must mirror the images to your China ECR **before** deploying any OpenClaw instances.
+The OpenClaw Operator creates pods that pull images from `ghcr.io` and Docker Hub. These registries are inaccessible from China. Use the provided script to mirror all images before deploying:
 
 ```bash
-# Set variables
-CN_ACCOUNT=834204282212
-CN_REGION=cn-northwest-1
-CN_REGISTRY="${CN_ACCOUNT}.dkr.ecr.${CN_REGION}.amazonaws.com.cn"
-
-# Login to China ECR
-aws ecr get-login-password --region $CN_REGION --profile china \
-  | docker login --username AWS --password-stdin $CN_REGISTRY
-
-# Create repos (idempotent)
-for repo in openclaw/openclaw astral-sh/uv library/nginx otel/opentelemetry-collector; do
-  aws ecr create-repository --repository-name "$repo" --region $CN_REGION --profile china 2>/dev/null || true
-done
-
-# Pull from global, push to China
-declare -A IMAGES=(
-  ["ghcr.io/openclaw/openclaw:latest"]="openclaw/openclaw:latest"
-  ["ghcr.io/astral-sh/uv:0.6-bookworm-slim"]="astral-sh/uv:0.6-bookworm-slim"
-  ["nginx:1.27-alpine"]="library/nginx:1.27-alpine"
-  ["otel/opentelemetry-collector:0.120.0"]="otel/opentelemetry-collector:0.120.0"
-)
-for src in "${!IMAGES[@]}"; do
-  docker pull "$src"
-  docker tag "$src" "$CN_REGISTRY/${IMAGES[$src]}"
-  docker push "$CN_REGISTRY/${IMAGES[$src]}"
-done
+# Run from a machine with global internet access (e.g., global-region EC2)
+bash eks/scripts/build-and-mirror.sh \
+  --region cn-northwest-1 \
+  --name openclaw-cn \
+  --profile china
 ```
 
-> **Tip**: Run the image mirror from a machine with good global internet access (e.g., a global-region EC2 instance), then push to China ECR.
+This mirrors all 10 operator images (openclaw, uv, nginx, otel-collector, chromedp, tailscale, ollama, ttyd, rclone, operator) plus builds and pushes the admin console image. See the script for the full image list.
 
 ---
 

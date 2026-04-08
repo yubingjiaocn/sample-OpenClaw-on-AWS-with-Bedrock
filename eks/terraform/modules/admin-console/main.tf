@@ -421,28 +421,32 @@ resource "kubernetes_service_v1" "admin_console" {
 #   terraform taint 'module.admin_console[0].null_resource.seed_data'
 # -----------------------------------------------------------------------------
 resource "null_resource" "seed_data" {
-  # Re-run on every apply to pick up seed data changes.
-  # The seed scripts are idempotent (put_item overwrites, S3 sync is additive).
+  # Runs once on initial table creation. Seed scripts use condition_expression
+  # to skip existing records, so re-running (via taint) is safe.
+  #   terraform taint 'module.admin_console[0].null_resource.seed_data'
   triggers = {
-    always_run = timestamp()
+    table_arn = aws_dynamodb_table.enterprise.arn
+    bucket    = aws_s3_bucket.workspaces.id
   }
 
   provisioner "local-exec" {
     working_dir = "${path.module}/../../../../enterprise/admin-console/server"
     environment = {
-      AWS_REGION = var.region
+      AWS_REGION   = var.region
+      SEED_NO_OVERWRITE = "1"
     }
     command = <<-EOT
-      echo "[seed] Seeding DynamoDB table: ${aws_dynamodb_table.enterprise.name}"
+      echo "[seed] Seeding DynamoDB table: ${aws_dynamodb_table.enterprise.name} (skip existing)"
       python3 seed_dynamodb.py   --table "${aws_dynamodb_table.enterprise.name}" --region "${var.region}" 2>/dev/null || echo "[seed] seed_dynamodb.py skipped"
       python3 seed_roles.py      --table "${aws_dynamodb_table.enterprise.name}" --region "${var.region}" 2>/dev/null || echo "[seed] seed_roles.py skipped"
       python3 seed_settings.py   --table "${aws_dynamodb_table.enterprise.name}" --region "${var.region}" 2>/dev/null || echo "[seed] seed_settings.py skipped"
       python3 seed_knowledge_docs.py --bucket "${aws_s3_bucket.workspaces.id}" --region "${var.region}" 2>/dev/null || echo "[seed] seed_knowledge_docs.py skipped"
       python3 seed_ssm_tenants.py --region "${var.region}" --stack "${local.stack_name}" 2>/dev/null || echo "[seed] seed_ssm_tenants.py skipped"
 
-      echo "[seed] Uploading SOUL templates to S3"
+      echo "[seed] Uploading SOUL templates to S3 (no-overwrite)"
       if [ -d "../server/soul-templates" ]; then
-        aws s3 sync "../server/soul-templates/" "s3://${aws_s3_bucket.workspaces.id}/_shared/" --region "${var.region}" --quiet
+        aws s3 sync "../server/soul-templates/" "s3://${aws_s3_bucket.workspaces.id}/_shared/" \
+          --region "${var.region}" --size-only --quiet
       fi
 
       echo "[seed] Done"

@@ -61,11 +61,23 @@ def seed(table_name: str, region: str):
         "employeeKBs": {},
     })
 
-    print(f"Writing {len(items)} config items...")
-    with table.batch_writer() as batch:
+    import os
+    no_overwrite = os.environ.get("SEED_NO_OVERWRITE", "") == "1"
+    if no_overwrite:
+        written, skipped = 0, 0
         for item in items:
-            batch.put_item(Item=item)
-    print("Done!")
+            try:
+                table.put_item(Item=item, ConditionExpression="attribute_not_exists(PK)")
+                written += 1
+            except table.meta.client.exceptions.ConditionalCheckFailedException:
+                skipped += 1
+        print(f"Done! {written} new, {skipped} existing (skipped).")
+    else:
+        print(f"Writing {len(items)} config items...")
+        with table.batch_writer() as batch:
+            for item in items:
+                batch.put_item(Item=item)
+        print("Done!")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

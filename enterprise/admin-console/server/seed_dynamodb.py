@@ -6,6 +6,7 @@ Usage: python seed_dynamodb.py [--region us-east-2] [--table openclaw-enterprise
 """
 import argparse
 import json
+import os
 import time
 import boto3
 
@@ -157,11 +158,28 @@ def seed(table_name: str, region: str):
             "mode": mode, "channel": ch, "status": st, "createdAt": "2026-02-01T00:00:00Z"})
 
     # --- Write all items ---
-    print(f"Writing {len(items)} items to {table_name}...")
-    with table.batch_writer() as batch:
+    no_overwrite = os.environ.get("SEED_NO_OVERWRITE", "") == "1"
+    if no_overwrite:
+        # Skip existing records — only insert new ones.
+        # This prevents overwriting data modified by admins via the UI.
+        written = 0
+        skipped = 0
         for item in items:
-            batch.put_item(Item=item)
-    print(f"Done! {len(items)} items seeded.")
+            try:
+                table.put_item(
+                    Item=item,
+                    ConditionExpression="attribute_not_exists(PK)",
+                )
+                written += 1
+            except table.meta.client.exceptions.ConditionalCheckFailedException:
+                skipped += 1
+        print(f"Done! {written} new items written, {skipped} existing items skipped.")
+    else:
+        print(f"Writing {len(items)} items to {table_name}...")
+        with table.batch_writer() as batch:
+            for item in items:
+                batch.put_item(Item=item)
+        print(f"Done! {len(items)} items seeded.")
 
 
 if __name__ == "__main__":

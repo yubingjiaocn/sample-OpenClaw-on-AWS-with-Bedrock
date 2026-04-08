@@ -50,38 +50,17 @@ Amazon Bedrock 不在 AWS 中国区域运营。有两种替代方案：
 
 #### 同步容器镜像至中国区 ECR
 
-OpenClaw Operator 创建的 Pod 会从 `ghcr.io` 和 Docker Hub 拉取镜像。这些镜像仓库在中国大陆无法访问。**必须在部署 OpenClaw 实例之前将镜像同步到中国区 ECR。**
+OpenClaw Operator 创建的 Pod 会从 `ghcr.io` 和 Docker Hub 拉取镜像。这些镜像仓库在中国大陆无法访问。使用提供的脚本一键同步所有镜像：
 
 ```bash
-# 设置变量（按实际情况修改）
-CN_ACCOUNT=834204282212
-CN_REGION=cn-northwest-1
-CN_REGISTRY="${CN_ACCOUNT}.dkr.ecr.${CN_REGION}.amazonaws.com.cn"
-
-# 登录中国区 ECR
-aws ecr get-login-password --region $CN_REGION --profile china \
-  | docker login --username AWS --password-stdin $CN_REGISTRY
-
-# 创建仓库（可重复执行）
-for repo in openclaw/openclaw astral-sh/uv library/nginx otel/opentelemetry-collector; do
-  aws ecr create-repository --repository-name "$repo" --region $CN_REGION --profile china 2>/dev/null || true
-done
-
-# 从全球区拉取，推送至中国区
-declare -A IMAGES=(
-  ["ghcr.io/openclaw/openclaw:latest"]="openclaw/openclaw:latest"
-  ["ghcr.io/astral-sh/uv:0.6-bookworm-slim"]="astral-sh/uv:0.6-bookworm-slim"
-  ["nginx:1.27-alpine"]="library/nginx:1.27-alpine"
-  ["otel/opentelemetry-collector:0.120.0"]="otel/opentelemetry-collector:0.120.0"
-)
-for src in "${!IMAGES[@]}"; do
-  docker pull "$src"
-  docker tag "$src" "$CN_REGISTRY/${IMAGES[$src]}"
-  docker push "$CN_REGISTRY/${IMAGES[$src]}"
-done
+# 在具有良好国际网络的机器上执行（如全球区域的 EC2 实例）
+bash eks/scripts/build-and-mirror.sh \
+  --region cn-northwest-1 \
+  --name openclaw-cn \
+  --profile china
 ```
 
-> **提示**：建议在具有良好国际网络的机器上执行镜像同步（如全球区域的 EC2 实例），然后推送至中国区 ECR。
+该脚本会同步全部 10 个 Operator 镜像（openclaw、uv、nginx、otel-collector、chromedp、tailscale、ollama、ttyd、rclone、operator），并构建推送管理控制台镜像。完整镜像列表见脚本内容。
 
 ---
 
