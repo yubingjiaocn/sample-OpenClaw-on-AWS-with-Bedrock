@@ -10,7 +10,9 @@ import { EksClusterTab } from './EKSCluster';
 import {
   useAdminAssistant, useUpdateAdminAssistant,
   useChangeAdminPassword, useSystemStats, useServiceStatus, useModelConfig,
+  useEksDefaults, useUpdateEksDefaults,
 } from '../hooks/useApi';
+import type { EksDefaults } from '../hooks/useApi';
 import { useAuth } from '../contexts/AuthContext';
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -366,6 +368,150 @@ function SystemTab() {
   );
 }
 
+// ─── EKS Deployment Defaults ────────────────────────────────────────────────
+
+function EksDefaultsSection() {
+  const { data: defaults, isLoading } = useEksDefaults();
+  const update = useUpdateEksDefaults();
+  const [draft, setDraft] = useState<Partial<EksDefaults>>({});
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    if (defaults) setDraft(defaults);
+  }, [defaults]);
+
+  const handleSave = () => {
+    update.mutate(draft, {
+      onSuccess: () => { setSaved(true); setTimeout(() => setSaved(false), 2000); },
+    });
+  };
+
+  if (isLoading) return <div className="text-sm text-text-muted py-4">Loading EKS defaults...</div>;
+
+  const set = (k: keyof EksDefaults, v: any) => setDraft(d => ({ ...d, [k]: v }));
+
+  return (
+    <Card className="mt-6">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h3 className="text-lg font-semibold text-text-primary">EKS Deployment Defaults</h3>
+          <p className="text-sm text-text-muted mt-0.5">Default configuration applied when creating new EKS agents. Per-agent overrides available in Create Agent wizard.</p>
+        </div>
+        <Button variant="primary" onClick={handleSave} disabled={saved}>
+          {saved ? <><Check size={14} /> Saved</> : 'Save Defaults'}
+        </Button>
+      </div>
+
+      <div className="space-y-5">
+        {/* Image */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-text-secondary">Container Image</label>
+            <input value={draft.image || ''} onChange={e => set('image', e.target.value)}
+              placeholder="default: ghcr.io/openclaw/openclaw:latest"
+              className="w-full rounded-xl border border-dark-border/60 bg-surface-dim px-4 py-2.5 text-sm text-text-primary focus:border-primary/60 focus:outline-none" />
+            <p className="text-[10px] text-text-muted mt-1">Main OpenClaw container image (ECR URI for custom builds)</p>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-text-secondary">Global Registry</label>
+            <input value={draft.globalRegistry || ''} onChange={e => set('globalRegistry', e.target.value)}
+              placeholder="e.g. 834204282212.dkr.ecr.cn-northwest-1.amazonaws.com.cn"
+              className="w-full rounded-xl border border-dark-border/60 bg-surface-dim px-4 py-2.5 text-sm text-text-primary focus:border-primary/60 focus:outline-none" />
+            <p className="text-[10px] text-text-muted mt-1">Rewrites registry for ALL images (required for China regions)</p>
+          </div>
+        </div>
+
+        {/* Model */}
+        <div>
+          <label className="mb-1 block text-xs font-medium text-text-secondary">Default Bedrock Model</label>
+          <input value={draft.model || ''} onChange={e => set('model', e.target.value)}
+            placeholder="bedrock/us.amazon.nova-2-lite-v1:0"
+            className="w-full rounded-xl border border-dark-border/60 bg-surface-dim px-4 py-2.5 text-sm text-text-primary focus:border-primary/60 focus:outline-none" />
+          <p className="text-[10px] text-text-muted mt-1">Leave blank to use platform default. Per-agent override available in Create Agent.</p>
+        </div>
+
+        {/* Resources */}
+        <div>
+          <p className="text-xs font-medium text-text-secondary mb-2">Compute Resources</p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {([
+              ['cpuRequest', 'CPU Request', '500m'],
+              ['cpuLimit', 'CPU Limit', '2'],
+              ['memoryRequest', 'Memory Request', '2Gi'],
+              ['memoryLimit', 'Memory Limit', '4Gi'],
+            ] as const).map(([key, label, ph]) => (
+              <div key={key}>
+                <label className="mb-1 block text-[10px] font-medium text-text-muted">{label}</label>
+                <input value={(draft as any)[key] || ''} onChange={e => set(key, e.target.value)}
+                  placeholder={ph}
+                  className="w-full rounded-xl border border-dark-border/60 bg-surface-dim px-3 py-2 text-sm text-text-primary focus:border-primary/60 focus:outline-none" />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Storage */}
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-text-secondary">Storage Class</label>
+            <input value={draft.storageClass || ''} onChange={e => set('storageClass', e.target.value)}
+              placeholder="cluster default (efs-sc)"
+              className="w-full rounded-xl border border-dark-border/60 bg-surface-dim px-4 py-2.5 text-sm text-text-primary focus:border-primary/60 focus:outline-none" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-text-secondary">Storage Size</label>
+            <input value={draft.storageSize || ''} onChange={e => set('storageSize', e.target.value)}
+              placeholder="10Gi"
+              className="w-full rounded-xl border border-dark-border/60 bg-surface-dim px-4 py-2.5 text-sm text-text-primary focus:border-primary/60 focus:outline-none" />
+          </div>
+        </div>
+
+        {/* Toggles & Advanced */}
+        <div className="flex items-center gap-6">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" checked={!!draft.chromium} onChange={e => set('chromium', e.target.checked)}
+              className="rounded border-dark-border text-primary focus:ring-primary" />
+            <span className="text-sm text-text-primary">Chromium Sidecar</span>
+          </label>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-text-secondary">Runtime Class</label>
+            <input value={draft.runtimeClass || ''} onChange={e => set('runtimeClass', e.target.value)}
+              placeholder="e.g. kata-qemu"
+              className="w-full rounded-xl border border-dark-border/60 bg-surface-dim px-4 py-2.5 text-sm text-text-primary focus:border-primary/60 focus:outline-none" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-text-secondary">Service Type</label>
+            <select value={draft.serviceType || ''} onChange={e => set('serviceType', e.target.value)}
+              className="w-full rounded-xl border border-dark-border/60 bg-surface-dim px-4 py-2.5 text-sm text-text-primary focus:border-primary/60 focus:outline-none">
+              <option value="">ClusterIP (default)</option>
+              <option value="LoadBalancer">LoadBalancer</option>
+              <option value="NodePort">NodePort</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-text-secondary">Node Selector (JSON)</label>
+            <input value={draft.nodeSelector || ''} onChange={e => set('nodeSelector', e.target.value)}
+              placeholder='{"katacontainers.io/kata-runtime": "true"}'
+              className="w-full rounded-xl border border-dark-border/60 bg-surface-dim px-4 py-2.5 text-sm text-text-primary focus:border-primary/60 focus:outline-none" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-text-secondary">Tolerations (JSON)</label>
+            <input value={draft.tolerations || ''} onChange={e => set('tolerations', e.target.value)}
+              placeholder='[{"key": "kata", "value": "true", "effect": "NoSchedule"}]'
+              className="w-full rounded-xl border border-dark-border/60 bg-surface-dim px-4 py-2.5 text-sm text-text-primary focus:border-primary/60 focus:outline-none" />
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function Settings() {
@@ -391,7 +537,7 @@ export default function Settings() {
         {tab === 'account' && <AccountTab />}
         {tab === 'interface' && <InterfaceTab />}
         {tab === 'assistant' && <AdminAssistantTab />}
-        {tab === 'eks' && <EksClusterTab />}
+        {tab === 'eks' && <><EksClusterTab /><EksDefaultsSection /></>}
         {tab === 'system' && <SystemTab />}
       </div>
     </div>

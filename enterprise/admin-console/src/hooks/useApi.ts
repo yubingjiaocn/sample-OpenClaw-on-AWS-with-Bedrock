@@ -942,6 +942,42 @@ export function useRemoveEmployeeModel() {
   });
 }
 
+// ── EKS Defaults ─────────────────────────────────────────────────────────────
+
+export interface EksDefaults {
+  image: string;
+  globalRegistry: string;
+  model: string;
+  cpuRequest: string;
+  cpuLimit: string;
+  memoryRequest: string;
+  memoryLimit: string;
+  storageClass: string;
+  storageSize: string;
+  chromium: boolean;
+  runtimeClass: string;
+  serviceType: string;
+  backupSchedule: string;
+  nodeSelector: string;
+  tolerations: string;
+}
+
+export function useEksDefaults() {
+  return useQuery<EksDefaults>({
+    queryKey: ['eks-defaults'],
+    queryFn: () => api.get('/settings/eks-defaults'),
+    staleTime: 30_000,
+  });
+}
+
+export function useUpdateEksDefaults() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Partial<EksDefaults>) => api.put('/settings/eks-defaults', data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['eks-defaults'] }),
+  });
+}
+
 // ── Agent config (compaction, context, language) ───────────────────────────────
 
 export function useAgentConfig() {

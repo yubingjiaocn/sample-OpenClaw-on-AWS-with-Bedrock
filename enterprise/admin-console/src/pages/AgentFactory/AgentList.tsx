@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Bot, Plus, Users, Star, Zap, Edit3, Play, Settings, Eye, Search, Filter, Cpu, SlidersHorizontal, Trash2, RefreshCw, Check, Cloud } from 'lucide-react';
 import { Card, StatCard, Badge, Button, PageHeader, Table as DataTable, Modal, Input, Select, StatusDot, Tabs } from '../../components/ui';
-import { useAgents, usePositions, useEmployees, useCreateAgent, useModelConfig, useUpdateModelConfig, useUpdateFallbackModel, useSetPositionModel, useRemovePositionModel, useSetEmployeeModel, useRemoveEmployeeModel, useAgentConfig, useSetPositionAgentConfig, useSetEmployeeAgentConfig, useEksCluster, useEksInstances } from '../../hooks/useApi';
+import { useAgents, usePositions, useEmployees, useCreateAgent, useModelConfig, useUpdateModelConfig, useUpdateFallbackModel, useSetPositionModel, useRemovePositionModel, useSetEmployeeModel, useRemoveEmployeeModel, useAgentConfig, useSetPositionAgentConfig, useSetEmployeeAgentConfig, useEksCluster, useEksInstances, useEksDefaults } from '../../hooks/useApi';
+import { Toggle } from '../../components/ui';
 import { EksInstancesTab } from '../EKSCluster';
 import { CHANNEL_LABELS } from '../../types';
 import type { Agent, ChannelType } from '../../types';
@@ -54,6 +55,17 @@ export default function AgentList() {
   const [newEmp, setNewEmp] = useState('');
   const [newChannels, setNewChannels] = useState<string[]>(['discord']);
   const [newDeployMode, setNewDeployMode] = useState<'serverless' | 'always-on-ecs' | 'eks'>('serverless');
+  // EKS config for Create Agent wizard (pre-filled from defaults)
+  const { data: eksDefaults } = useEksDefaults();
+  const [eksImage, setEksImage] = useState('');
+  const [eksRegistry, setEksRegistry] = useState('');
+  const [eksCpuReq, setEksCpuReq] = useState('500m');
+  const [eksCpuLim, setEksCpuLim] = useState('2');
+  const [eksMemReq, setEksMemReq] = useState('2Gi');
+  const [eksMemLim, setEksMemLim] = useState('4Gi');
+  const [eksStorageClass, setEksStorageClass] = useState('');
+  const [eksStorageSize, setEksStorageSize] = useState('10Gi');
+  const [eksChromium, setEksChromium] = useState(false);
   const [filterText, setFilterText] = useState('');
   const [filterDept, setFilterDept] = useState('all');
   const [filterStatus, setFilterStatus] = useState('all');
@@ -359,7 +371,7 @@ export default function AgentList() {
                     const pos = POSITIONS.find(p => p.id === newPos);
                     const emp = EMPLOYEES.find(e => e.id === newEmp);
                     const defaultCh = pos?.defaultChannel || 'discord';
-                    createAgent.mutate({
+                    const payload: any = {
                       id: `agent-${newPos.replace('pos-', '')}-${newEmp.replace('emp-', '')}`,
                       name: newName,
                       employeeId: newEmp || null,
@@ -370,7 +382,22 @@ export default function AgentList() {
                       defaultChannel: defaultCh,
                       skills: pos?.defaultSkills || [],
                       deployMode: newDeployMode,
-                    } as any);
+                    };
+                    // Include EKS config so auto-deploy uses it
+                    if (newDeployMode === 'eks') {
+                      payload.eksConfig = {
+                        ...(eksImage && { image: eksImage }),
+                        ...(eksRegistry && { globalRegistry: eksRegistry }),
+                        ...(eksCpuReq !== '500m' && { cpuRequest: eksCpuReq }),
+                        ...(eksCpuLim !== '2' && { cpuLimit: eksCpuLim }),
+                        ...(eksMemReq !== '2Gi' && { memoryRequest: eksMemReq }),
+                        ...(eksMemLim !== '4Gi' && { memoryLimit: eksMemLim }),
+                        ...(eksStorageClass && { storageClass: eksStorageClass }),
+                        ...(eksStorageSize !== '10Gi' && { storageSize: eksStorageSize }),
+                        ...(eksChromium && { chromium: true }),
+                      };
+                    }
+                    createAgent.mutate(payload);
                   }
                   setShowCreate(false); setNewName(''); setNewPos(''); setNewEmp(''); setNewDeployMode('serverless'); setCreateStep(0);
                 }}>Create Agent</Button>
@@ -414,7 +441,22 @@ export default function AgentList() {
                 </button>
                 <button
                   className={`rounded-xl border p-3 text-left transition-all ${newDeployMode === 'eks' ? 'border-primary bg-primary/5' : eksAvailable ? 'border-dark-border/40 bg-surface-dim hover:border-dark-border' : 'border-dark-border/20 bg-surface-dim/50 opacity-50 cursor-not-allowed'}`}
-                  onClick={() => eksAvailable && setNewDeployMode('eks')}
+                  onClick={() => {
+                    if (!eksAvailable) return;
+                    setNewDeployMode('eks');
+                    // Pre-fill from EKS defaults
+                    if (eksDefaults) {
+                      setEksImage(eksDefaults.image || '');
+                      setEksRegistry(eksDefaults.globalRegistry || '');
+                      setEksCpuReq(eksDefaults.cpuRequest || '500m');
+                      setEksCpuLim(eksDefaults.cpuLimit || '2');
+                      setEksMemReq(eksDefaults.memoryRequest || '2Gi');
+                      setEksMemLim(eksDefaults.memoryLimit || '4Gi');
+                      setEksStorageClass(eksDefaults.storageClass || '');
+                      setEksStorageSize(eksDefaults.storageSize || '10Gi');
+                      setEksChromium(!!eksDefaults.chromium);
+                    }
+                  }}
                   disabled={!eksAvailable}
                 >
                   <p className="text-sm font-medium text-text-primary">EKS (Kubernetes)</p>
@@ -422,6 +464,28 @@ export default function AgentList() {
                 </button>
               </div>
             </div>
+
+            {/* EKS Configuration — shown when EKS mode selected */}
+            {newDeployMode === 'eks' && (
+              <div className="space-y-3 border-t border-dark-border/40 pt-4">
+                <p className="text-xs font-medium text-text-secondary">EKS Configuration <span className="text-text-muted font-normal">(pre-filled from Settings → EKS Defaults)</span></p>
+                <div className="grid grid-cols-2 gap-3">
+                  <Input label="Container Image" value={eksImage} onChange={setEksImage} placeholder="default from operator" description="ECR URI for custom builds" />
+                  <Input label="Global Registry" value={eksRegistry} onChange={setEksRegistry} placeholder="e.g. ECR China URI" description="Required for China regions" />
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <Input label="CPU Request" value={eksCpuReq} onChange={setEksCpuReq} placeholder="500m" />
+                  <Input label="CPU Limit" value={eksCpuLim} onChange={setEksCpuLim} placeholder="2" />
+                  <Input label="Memory Request" value={eksMemReq} onChange={setEksMemReq} placeholder="2Gi" />
+                  <Input label="Memory Limit" value={eksMemLim} onChange={setEksMemLim} placeholder="4Gi" />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <Input label="Storage Class" value={eksStorageClass} onChange={setEksStorageClass} placeholder="cluster default" />
+                  <Input label="Storage Size" value={eksStorageSize} onChange={setEksStorageSize} placeholder="10Gi" />
+                </div>
+                <Toggle label="Chromium Browser Sidecar" checked={eksChromium} onChange={setEksChromium} description="Enable headless Chromium for web scraping" />
+              </div>
+            )}
           </div>
         )}
         {createStep === 1 && (

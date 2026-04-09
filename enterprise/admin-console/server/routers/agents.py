@@ -272,7 +272,23 @@ def create_agent(body: dict):
                         if content and content.strip():
                             workspace_files[fname] = content
 
-                model = body.get("model", os.environ.get("DEFAULT_BEDROCK_MODEL", "bedrock/us.amazon.nova-2-lite-v1:0"))
+                # Merge per-agent EKS config with saved defaults
+                eks_cfg = {}
+                saved_defaults = db.get_config("eks-defaults") or {}
+                eks_cfg.update({k: v for k, v in saved_defaults.items() if v})
+                eks_cfg.update({k: v for k, v in (body.get("eksConfig") or {}).items() if v})
+
+                model = eks_cfg.get("model") or body.get("model") or os.environ.get("DEFAULT_BEDROCK_MODEL", "bedrock/us.amazon.nova-2-lite-v1:0")
+
+                # Parse nodeSelector/tolerations JSON strings
+                node_selector = None
+                if eks_cfg.get("nodeSelector"):
+                    try: node_selector = json.loads(eks_cfg["nodeSelector"]) if isinstance(eks_cfg["nodeSelector"], str) else eks_cfg["nodeSelector"]
+                    except Exception: pass
+                tolerations = None
+                if eks_cfg.get("tolerations"):
+                    try: tolerations = json.loads(eks_cfg["tolerations"]) if isinstance(eks_cfg["tolerations"], str) else eks_cfg["tolerations"]
+                    except Exception: pass
 
                 loop = asyncio.get_event_loop()
                 result = loop.run_until_complete(k8s_client.create_openclaw_instance(
@@ -281,7 +297,21 @@ def create_agent(body: dict):
                     employee_id=emp_id or "",
                     position_id=pos_id,
                     model=model,
+                    image=eks_cfg.get("image", ""),
+                    global_registry=eks_cfg.get("globalRegistry", ""),
                     workspace_files=workspace_files if workspace_files else None,
+                    storage_class=eks_cfg.get("storageClass", ""),
+                    storage_size=eks_cfg.get("storageSize", "10Gi"),
+                    cpu_request=eks_cfg.get("cpuRequest", "500m"),
+                    cpu_limit=eks_cfg.get("cpuLimit", "2"),
+                    memory_request=eks_cfg.get("memoryRequest", "2Gi"),
+                    memory_limit=eks_cfg.get("memoryLimit", "4Gi"),
+                    chromium=bool(eks_cfg.get("chromium")),
+                    runtime_class=eks_cfg.get("runtimeClass", ""),
+                    service_type=eks_cfg.get("serviceType", ""),
+                    backup_schedule=eks_cfg.get("backupSchedule", ""),
+                    node_selector=node_selector,
+                    tolerations=tolerations,
                 ))
 
                 # Write SSM eks-endpoint

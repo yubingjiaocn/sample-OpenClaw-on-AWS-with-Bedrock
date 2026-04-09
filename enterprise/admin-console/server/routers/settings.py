@@ -119,6 +119,50 @@ def remove_employee_model(emp_id: str, authorization: str = Header(default="")):
     return config.get("employeeOverrides", {})
 
 
+# -- EKS Defaults -----------------------------------------------------------
+
+EKS_DEFAULTS_KEY = "eks-defaults"
+
+_EKS_DEFAULTS_TEMPLATE = {
+    "image": "",
+    "globalRegistry": "",
+    "model": "",
+    "cpuRequest": "500m",
+    "cpuLimit": "2",
+    "memoryRequest": "2Gi",
+    "memoryLimit": "4Gi",
+    "storageClass": "",
+    "storageSize": "10Gi",
+    "chromium": False,
+    "runtimeClass": "",
+    "serviceType": "",
+    "backupSchedule": "",
+    "nodeSelector": "",
+    "tolerations": "",
+}
+
+
+@router.get("/api/v1/settings/eks-defaults")
+def get_eks_defaults(authorization: str = Header(default="")):
+    require_role(authorization, roles=["admin"])
+    cfg = db.get_config(EKS_DEFAULTS_KEY)
+    if not cfg:
+        return dict(_EKS_DEFAULTS_TEMPLATE)
+    # Merge with template so new fields get defaults
+    merged = dict(_EKS_DEFAULTS_TEMPLATE)
+    merged.update({k: v for k, v in cfg.items() if k in _EKS_DEFAULTS_TEMPLATE})
+    return merged
+
+
+@router.put("/api/v1/settings/eks-defaults")
+def update_eks_defaults(body: dict, authorization: str = Header(default="")):
+    require_role(authorization, roles=["admin"])
+    # Only keep known keys
+    filtered = {k: v for k, v in body.items() if k in _EKS_DEFAULTS_TEMPLATE}
+    db.set_config(EKS_DEFAULTS_KEY, filtered)
+    return filtered
+
+
 # -- Agent Config (compaction, context window, language) ---------------------
 
 def _get_agent_config() -> dict:
