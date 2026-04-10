@@ -2,94 +2,206 @@
 
 ## Project Overview
 
-This repository provides **AWS-native CloudFormation templates** for deploying [OpenClaw](https://www.npmjs.com/package/openclaw) (formerly Clawdbot/Moltbot), an open-source personal AI assistant. It integrates with Amazon Bedrock for model access and supports messaging platforms including WhatsApp, Telegram, Discord, Slack, Microsoft Teams, iMessage, and Google Chat.
+**sample-OpenClaw-on-AWS-with-Bedrock** deploys [OpenClaw](https://www.npmjs.com/package/openclaw), an open-source personal AI assistant, on AWS with Amazon Bedrock. It supports three deployment runtimes:
 
-This is **not** an application codebase -- it is infrastructure-as-code (CloudFormation YAML) plus documentation. There are no Lambda functions, no package.json, no build system, and no automated tests.
+1. **EC2 (Serverless/AgentCore)** — CloudFormation single-instance deploy, scales to zero
+2. **ECS (Fargate)** — Always-on containers with EFS workspace, direct IM bot support
+3. **EKS (Kubernetes)** — Operator-managed pods via OpenClawInstance CRD, Helm chart, China region support
+
+The **Enterprise Platform** adds multi-tenant agent management: an Admin Console (React + FastAPI), SOUL layering (Global/Position/Personal), role-based model config, IM channel binding, usage analytics, and audit logging.
 
 ## Repository Structure
 
 ```
 .
-├── clawdbot-bedrock.yaml          # Main CloudFormation template (Linux/Graviton)
-├── clawdbot-bedrock-mac.yaml      # macOS CloudFormation template (Apple Silicon/Intel)
-├── .kiro/
-│   └── steering/
-│       └── deploy-moltbot-conversationally.md  # Kiro AI deployment guide (~1300 lines)
-├── eks/                           # EKS deployment (Terraform + scripts)
-│   ├── terraform/                 # Terraform modules (VPC, EKS, operator, admin-console, etc.)
-│   ├── manifests/                 # K8s manifest examples (OpenClawInstance CRDs)
-│   └── scripts/                   # Install, cleanup, validate, integration-test, build-and-mirror
-├── enterprise/                    # Enterprise platform (Admin Console, Agent Container, Gateway)
-│   ├── admin-console/             # React + FastAPI admin console
-│   │   ├── server/                # FastAPI backend (routers, services, db, s3ops)
-│   │   ├── src/                   # React frontend (pages, hooks, components)
-│   │   ├── chart/                 # Helm chart (SA, RBAC, Deployment, Service, Ingress)
-│   │   ├── Dockerfile             # Multi-stage build (Node + Python)
-│   │   └── deploy-eks.sh          # Standalone EKS deploy script (uses Helm chart)
-│   ├── agent-container/           # OpenClaw agent Docker image
-│   └── gateway/                   # Tenant Router, Bedrock H2 Proxy
-├── images/                        # Screenshots for documentation
+├── clawdbot-bedrock.yaml              # CloudFormation (Linux/Graviton)
+├── clawdbot-bedrock-mac.yaml          # CloudFormation (macOS)
+├── eks/                               # EKS deployment
+│   ├── terraform/                     # Terraform modules
+│   │   ├── main.tf                    # Root: VPC, EKS, storage, admin-console
+│   │   ├── modules/
+│   │   │   ├── admin-console/         # Helm release, DynamoDB, S3, Pod Identity, seed data
+│   │   │   └── storage/               # EFS/EBS CSI drivers, StorageClass
+│   │   └── variables.tf / outputs.tf
+│   ├── manifests/examples/            # OpenClawInstance CRD examples
+│   └── scripts/                       # install, cleanup, validate, integration-test, build-and-mirror
+├── enterprise/
+│   ├── admin-console/                 # Admin Console application
+│   │   ├── server/                    # FastAPI backend
+│   │   │   ├── main.py               # App entrypoint, router registration
+│   │   │   ├── db.py                  # DynamoDB single-table (PK=ORG#acme, SK=TYPE#id)
+│   │   │   ├── s3ops.py              # S3 workspace & SOUL layer operations
+│   │   │   ├── shared.py             # SSM client, auth helpers, config
+│   │   │   ├── routers/              # 18 FastAPI routers (see below)
+│   │   │   ├── services/k8s_client.py # kubernetes-asyncio client for CRD CRUD
+│   │   │   ├── test_admin_eks.py      # Backend tests (70 tests, unittest)
+│   │   │   └── test_k8s_client.py
+│   │   ├── src/                       # React frontend (Vite + TailwindCSS v4)
+│   │   │   ├── hooks/useApi.ts        # React Query hooks for all API endpoints
+│   │   │   ├── pages/                 # ~25 page components
+│   │   │   ├── components/ui.tsx      # Shared UI components (Card, Badge, Button, Modal, etc.)
+│   │   │   ├── types/index.ts         # TypeScript types (Agent, Employee, Position, etc.)
+│   │   │   └── test/                  # Vitest setup + helpers (39 frontend tests)
+│   │   ├── chart/                     # Helm chart (SA, RBAC, Deployment, Service, Ingress)
+│   │   ├── Dockerfile                 # Multi-stage: Node (frontend) + Python (backend)
+│   │   └── deploy-eks.sh             # Standalone EKS deploy script
+│   ├── agent-container/               # OpenClaw agent Docker image
+│   └── gateway/                       # Tenant Router, Bedrock H2 Proxy
 ├── docs/
-│   ├── DEPLOYMENT_EKS.md          # EKS deployment guide (English)
-│   └── DEPLOYMENT_EKS_CN.md       # EKS deployment guide (Chinese)
-├── README.md                      # Primary documentation (English)
-├── README_CN.md                   # Chinese documentation
-├── DEPLOYMENT.md                  # Step-by-step deployment guide (EC2)
-├── SECURITY.md                    # Security architecture and best practices
-├── TROUBLESHOOTING.md             # Common issues and resolution steps
-├── QUICK_START_KIRO.md            # Kiro AI-guided deployment quickstart
-├── CONTRIBUTING.md                # Contribution guidelines
-├── CODE_OF_CONDUCT.md             # Amazon Open Source Code of Conduct
-└── LICENSE                        # MIT No Attribution
+│   ├── DEPLOYMENT_EKS.md             # EKS deployment guide (English)
+│   └── DEPLOYMENT_EKS_CN.md          # EKS deployment guide (Chinese)
+├── skills/                            # OpenClaw skills (kiro-cli, s3-files)
+└── traffic/                           # Traffic routing utilities
 ```
 
-## Key Files
+## Backend Routers (FastAPI)
 
-### CloudFormation Templates
+| Router | Prefix | Purpose |
+|--------|--------|---------|
+| `agents.py` | `/agents` | Agent CRUD, auto-deploy EKS on create |
+| `admin_eks.py` | `/admin/eks` | EKS cluster, operator, deploy/stop/reload, gateway proxy |
+| `admin_always_on.py` | `/admin/always-on` | ECS Fargate agent lifecycle |
+| `admin_ai.py` | `/admin/ai` | Bedrock model configuration |
+| `admin_im.py` | `/admin/im` | IM channel bot management |
+| `settings.py` | `/settings` | Model config, EKS defaults, agent config, security |
+| `org.py` | `/org` | Departments, positions, employees |
+| `bindings.py` | `/bindings` | Employee-agent-channel bindings |
+| `gateway_proxy.py` | `/portal/gateway` | Reverse proxy to agent Gateway UI (ECS) |
+| `portal.py` | `/portal` | Employee self-service portal |
+| `security.py` | `/security` | Runtimes, guardrails, IAM, VPC |
+| `monitor.py` | `/monitor` | Sessions, alerts, health, runtime events |
+| `audit.py` | `/audit` | Audit log, insights, guardrail events |
+| `knowledge.py` | `/knowledge` | Knowledge base management |
+| `playground.py` | `/playground` | API testing playground |
+| `usage.py` | `/usage` | Usage analytics (by agent, dept, model) |
+| `twin.py` | `/twin` | Twin chat |
 
-- **`clawdbot-bedrock.yaml`** (~660 lines): The primary deployment template for Linux (Ubuntu 24.04 on Graviton ARM or x86). Creates a full VPC, IAM roles, security groups, optional VPC endpoints, and an EC2 instance that bootstraps OpenClaw via a UserData script.
+## Key Concepts
 
-- **`clawdbot-bedrock-mac.yaml`** (~760 lines): macOS variant requiring a Dedicated Host. Supports mac1.metal (Intel), mac2.metal (M1), mac2-m2.metal (M2), and mac2-m2pro.metal (M2 Pro). Includes region-specific AMI mappings.
+### OpenClawInstance CRD
+```yaml
+apiVersion: openclaw.rocks/v1alpha1
+kind: OpenClawInstance
+spec:
+  image: {repository, tag}        # Container image
+  registry: "ecr-uri"             # Global registry override (China)
+  config.raw: {openclaw.json}     # Full config (models, gateway, tools)
+  env: [{name, value}]            # Environment variables
+  workspace.initialFiles: {}      # SOUL layers seeded to workspace
+  skills: []                      # ClawHub skill identifiers
+  resources: {requests, limits}   # CPU/memory
+  gateway: {enabled, port}        # Gateway UI on port 18789
+  chromium: {enabled}             # Headless browser sidecar
+  storage: {class, size}          # PVC configuration
+  security.rbac: {}               # ServiceAccount annotations (IRSA)
+```
 
-### Template Parameters
+### DynamoDB Single-Table Design
+- Table: `{stack}-enterprise` (e.g. `openclaw-test-enterprise`)
+- PK: `ORG#acme` (single org per stack)
+- SK patterns: `EMP#emp-id`, `AGENT#agent-id`, `DEPT#dept-id`, `POS#pos-id`, `CONFIG#key`
+- GSI1: `GSI1PK=TYPE#employee` / `GSI1SK=EMP#id` for type-based queries
+- Config stored as `CONFIG#eks-defaults`, `CONFIG#agent-config`, etc.
 
-Both templates share these key parameters:
-- `OpenClawModel` -- Bedrock model ID (default: `global.amazon.nova-2-lite-v1:0`; 9 models available)
-- `InstanceType` -- EC2 instance type (default: `c7g.large` Graviton)
-- `KeyPairName` -- EC2 key pair for emergency SSH
-- `AllowedSSHCIDR` -- SSH access CIDR (set to `127.0.0.1/32` to disable)
-- `CreateVPCEndpoints` -- Private networking toggle (adds ~$22/month)
-- `EnableSandbox` -- Docker sandbox isolation for non-main sessions
+### Gateway Proxy (EKS)
+Admin console proxies to agent Gateway UI via in-cluster Service DNS:
+- HTTP: `/api/v1/admin/eks/{agent_id}/gateway/{path}` → `http://{name}.openclaw.svc:18789/{path}`
+- WS: same path, two routes (root + path) for WebSocket
+- Auth: admin JWT via header/query/cookie; gateway token read from pod config (cached 5min)
+- HTML injection: `__OPENCLAW_CONTROL_UI_BASE_PATH__` for correct WS URL construction
+- Origin header overridden to match upstream host for allowedOrigins check
 
-### Template Conditions
+### K8s Name Sanitization
+Agent IDs may contain trailing hyphens (e.g. `agent-devops-`) which are invalid K8s names. `_sanitize_k8s_name()` in `k8s_client.py` strips these. Applied in all CRD methods: create, get, delete, patch, pod status, logs.
 
-- `CreateEndpoints` -- Controls VPC endpoint creation
-- `AllowSSH` -- Controls SSH security group rules
-- `UseGraviton` -- Detects ARM instance types (t4g, c7g, m7g) for AMI selection
+## Development Workflow
 
-### Resources Created (Linux Template)
+### Frontend
+```bash
+cd enterprise/admin-console
+npm install
+npm run dev          # Vite dev server on :3000, proxies /api to :8099
+npm run test         # Vitest (39 tests)
+npm run test:watch   # Vitest watch mode
+npm run build        # tsc + vite build
+```
 
-| Category | Resources |
-|----------|-----------|
-| Networking | VPC, Internet Gateway, public/private subnets, route tables |
-| VPC Endpoints | Bedrock Runtime, Bedrock Mantle, SSM, SSM Messages, EC2 Messages (conditional) |
-| IAM | Role (SSM + CloudWatch + Bedrock + SSM Parameter Store), Instance Profile |
-| Security | EC2 security group, VPC endpoint security group (conditional) |
-| Compute | EC2 instance with ~200-line UserData bootstrap script |
-| Orchestration | CloudFormation WaitCondition with 900s timeout |
+- Tests exclude from `tsconfig.json` build (`src/**/*.test.*`, `src/test/` excluded)
+- Test setup: `src/test/setup.ts` (jest-dom, localStorage mock)
+- Test helpers: `src/test/helpers.tsx` (QueryClient wrapper, data factories)
 
-### UserData Bootstrap Sequence
+### Backend
+```bash
+cd enterprise/admin-console/server
+python -m pytest test_admin_eks.py test_k8s_client.py -v  # 70 tests
+```
 
-The EC2 UserData script installs and configures:
-1. System packages (apt-get update/upgrade)
-2. AWS CLI v2
-3. SSM Agent
-4. Docker engine
-5. Node.js 22 via NVM (with retry logic)
-6. OpenClaw npm package (global install with retry logic)
-7. AWS region detection and configuration
-8. OpenClaw config (`~/.openclaw/openclaw.json`) with generated gateway token
-9. systemd user service registration
+### Docker Build
+```bash
+cd enterprise/admin-console
+
+# amd64 (global region)
+docker build -t admin-console:v22 .
+
+# arm64 (China region — Graviton m6g nodes)
+docker buildx build --platform linux/arm64 \
+  -t admin-console:v22-arm64 \
+  --output type=docker,dest=/tmp/admin-console-v22-arm64.tar .
+```
+
+### Deployment Pipeline
+
+**Global (us-west-2, openclaw-test cluster):**
+```bash
+aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin 600413481647.dkr.ecr.us-west-2.amazonaws.com
+docker push 600413481647.dkr.ecr.us-west-2.amazonaws.com/openclaw-test/admin-console:v22
+kubectl --context arn:aws:eks:us-west-2:600413481647:cluster/openclaw-test \
+  set image deployment/admin-console admin-console=...v22 -n openclaw
+```
+
+**China (cn-northwest-1, openclaw-cn cluster) — relay via S3 + EC2:**
+```bash
+# 1. Upload arm64 tar to China S3
+AWS_PROFILE=zhy aws s3 cp /tmp/admin-console-v22-arm64.tar \
+  s3://bingjiao-share-content/admin-console-v22-arm64.tar --region cn-northwest-1
+
+# 2. SSH to Dev EC2 (69.231.161.57) to load + push to China ECR
+ssh 69.231.161.57 bash <<'REMOTE'
+  aws s3 cp s3://bingjiao-share-content/admin-console-v22-arm64.tar /tmp/img.tar
+  docker load < /tmp/img.tar
+  docker tag openclaw-admin:v22-arm64 834204282212.dkr.ecr.cn-northwest-1.amazonaws.com.cn/openclaw-cn/admin-console:v22
+  aws ecr get-login-password --region cn-northwest-1 | docker login --username AWS --password-stdin 834204282212.dkr.ecr.cn-northwest-1.amazonaws.com.cn
+  docker push 834204282212.dkr.ecr.cn-northwest-1.amazonaws.com.cn/openclaw-cn/admin-console:v22
+REMOTE
+
+# 3. Deploy
+kubectl --context arn:aws-cn:eks:cn-northwest-1:834204282212:cluster/openclaw-cn \
+  set image deployment/admin-console admin-console=...v22 -n openclaw
+```
+
+### Terraform
+```bash
+cd eks/terraform
+terraform workspace select default   # Global (us-west-2)
+terraform workspace select china     # China (cn-northwest-1)
+terraform apply
+```
+
+## Active Deployments
+
+| Region | Cluster | Account | ECR | Nodes |
+|--------|---------|---------|-----|-------|
+| us-west-2 | openclaw-test | 600413481647 | `600413481647.dkr.ecr.us-west-2.amazonaws.com/openclaw-test/admin-console` | amd64 |
+| cn-northwest-1 | openclaw-cn | 834204282212 | `834204282212.dkr.ecr.cn-northwest-1.amazonaws.com.cn/openclaw-cn/admin-console` | arm64 (Graviton m6g) |
+
+## China Region Specifics
+
+- **ghcr.io inaccessible** — all images must be mirrored to China ECR via `eks/scripts/build-and-mirror.sh`
+- **Global Registry override** (`spec.registry` in CRD) rewrites ALL container image registries
+- **No Bedrock** — use third-party model providers instead
+- **ECR Public auth** — conditional in Terraform (us-east-1 doesn't exist in aws-cn)
+- **AWS CLI profile**: `zhy` for China credentials (`AWS_PROFILE=zhy`)
+- **Image relay**: S3 (bingjiao-share-content) → Dev EC2 (69.231.161.57) → China ECR
 
 ## Supported Models
 
@@ -97,114 +209,30 @@ The EC2 UserData script installs and configures:
 |-------|----|
 | Nova 2 Lite (default) | `global.amazon.nova-2-lite-v1:0` |
 | Claude Sonnet 4.5 | `global.anthropic.claude-sonnet-4-5-20250929-v1:0` |
-| Nova Pro | `us.amazon.nova-pro-v1:0` |
 | Claude Opus 4.6 | `global.anthropic.claude-opus-4-6-v1` |
-| Claude Opus 4.5 | `global.anthropic.claude-opus-4-5-20251101-v1:0` |
 | Claude Haiku 4.5 | `global.anthropic.claude-haiku-4-5-20251001-v1:0` |
-| Claude Sonnet 4 | `global.anthropic.claude-sonnet-4-20250514-v1:0` |
+| Nova Pro | `us.amazon.nova-pro-v1:0` |
 | DeepSeek R1 | `us.deepseek.r1-v1:0` |
 | Llama 3.3 70B | `us.meta.llama3-3-70b-instruct-v1:0` |
 | Kimi K2.5 | `moonshotai.kimi-k2.5` |
 
-**Note on Project Mantle models:** Kimi K2.5 is a Project Mantle model that uses the `bedrock-mantle` endpoint (`https://bedrock-mantle.REGION.api.aws/v1`) for OpenAI-compatible API access. While it also works through the standard Converse API (`bedrock-runtime`), there are known issues with tool-call parsing. The templates include both `bedrock-runtime` and `bedrock-mantle` VPC endpoints to support all models.
+## Commit Conventions
 
-## Supported Regions
+Use clear, descriptive messages. Examples from history:
+- `Fix null safety crashes, add K8s name sanitization, UI test infrastructure`
+- `Add gateway proxy for EKS instances — access OpenClaw UI from admin console`
+- `Auto-deploy to EKS when creating agent with eks deploy mode`
 
-Linux template: us-east-1, us-west-2, eu-west-1, ap-northeast-1
+Always include `Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>` when Claude generates the commit.
 
-Mac template: us-east-1, us-east-2, us-west-2, eu-west-1, eu-central-1, ap-southeast-1, ap-southeast-2
+## Security Notes
 
-## Development Guidelines
-
-### Working with CloudFormation Templates
-
-- Templates use YAML format with AWS CloudFormation syntax
-- The Linux template uses SSM Parameter Store to resolve the latest Ubuntu 24.04 AMI dynamically
-- The Mac template uses hardcoded AMI mappings per region (must be updated when new AMIs are released)
-- Conditional resources (VPC endpoints, SSH rules) are controlled via `Conditions` blocks
-- The UserData script is embedded as a `Fn::Base64`/`Fn::Sub` block within the EC2 instance resource
-
-### Naming Conventions
-
-- Template files: `clawdbot-bedrock*.yaml` (legacy naming from Clawdbot era)
-- The project has been renamed multiple times: Moltbot -> Clawdbot -> OpenClaw
-- Current branding is **OpenClaw** in all user-facing text
-- Internal resource logical IDs use `OpenClaw` prefix (e.g., `OpenClawInstance`, `OpenClawRole`)
-
-### Making Changes
-
-When modifying CloudFormation templates:
-1. Validate YAML syntax (no tabs, correct indentation)
-2. Ensure `Fn::Sub` variable references (`${Variable}`) match defined parameters/resources
-3. Keep Linux and Mac templates in sync for shared features
-4. Update the `Description` field if the template's purpose changes
-5. Test parameter `AllowedValues` lists match between both templates when applicable
-6. Update documentation (README.md, DEPLOYMENT.md, etc.) if user-visible behavior changes
-
-### CloudFormation Validation
-
-There are no automated tests. Validate templates manually:
-
-```bash
-# Validate template syntax
-aws cloudformation validate-template --template-body file://clawdbot-bedrock.yaml
-
-# Validate Mac template
-aws cloudformation validate-template --template-body file://clawdbot-bedrock-mac.yaml
-```
-
-### Security Considerations
-
-- IAM policies follow least-privilege: only `bedrock:InvokeModel`, `bedrock:InvokeModelWithResponseStream`, `bedrock:ListFoundationModels`, and SSM parameter access
-- SSM Session Manager is the primary access method (no public SSH needed)
-- VPC endpoints keep Bedrock API traffic on the AWS private network
-- Gateway tokens are generated at deploy time using `openssl rand -hex 24`
-- Docker sandbox is enabled by default for session isolation
-- Never commit or hardcode API keys, tokens, or credentials in templates
-
-### Documentation Standards
-
-- README.md is the primary entry point; keep it comprehensive
-- README_CN.md mirrors the English README in Chinese
-- DEPLOYMENT.md contains step-by-step operational procedures
-- SECURITY.md documents the security architecture
-- TROUBLESHOOTING.md covers common issues with specific commands
-- All docs reference SSM Session Manager as the recommended access method
-
-### Commit History Conventions
-
-Based on the repository history, commit messages follow a concise descriptive style:
-- `Add Claude Opus 4.6 support and consolidate IMDS detection`
-- `Enable WhatsApp, Telegram, Discord, Slack, iMessage, Google Chat`
-- `rename openclaw`
-- `Security fix: remove reference to unclaimed npm package`
-
-Use clear, descriptive messages that explain what changed and why.
-
-## Architecture Summary
-
-```
-User Device
-  |
-  v
-Messaging Platform (WhatsApp/Telegram/Discord/Slack/Teams)
-  |
-  v
-EC2 Instance (Ubuntu 24.04, Graviton ARM or x86)
-  ├── OpenClaw (Node.js application, npm package)
-  ├── Gateway Web UI (port 18789, loopback only)
-  ├── Docker (sandbox isolation)
-  └── SSM Agent (secure remote access)
-  |
-  v
-Amazon Bedrock (model inference via VPC endpoint or public endpoint)
-  |
-  v
-CloudTrail (API audit logging)
-```
-
-Access flow: Local machine -> SSM Session Manager port forwarding -> EC2 localhost:18789 -> OpenClaw Gateway UI
+- IAM: least-privilege (Bedrock invoke, SSM parameters, S3 workspace, DynamoDB table)
+- EKS Pod Identity (not IRSA) via `aws_eks_pod_identity_association`
+- Gateway tokens generated per-instance, read from pod config, never exposed to browser
+- Auth: JWT (HS256) with role-based access (admin, manager, employee)
+- Docker sandbox enabled by default for session isolation
 
 ## License
 
-MIT No Attribution (MIT-0) -- see LICENSE file.
+MIT No Attribution (MIT-0)
