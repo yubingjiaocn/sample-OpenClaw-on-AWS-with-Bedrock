@@ -1,0 +1,1390 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  OpenClaw EKS Workshop - Code Editor IDE + EKS infrastructure via CodeBuild/Terraform.
+  Deploys: (1) EKS cluster with OpenClaw Operator via CodeBuild, (2) browser-based Code Editor IDE,
+  (3) IAM Identity Center. For use in AWS Workshop Studio.
+
+# =============================================================================
+# Parameters
+# =============================================================================
+Parameters:
+  ClusterName:
+    Type: String
+    Default: openclaw-workshop
+    Description: EKS cluster name and resource prefix
+
+  Architecture:
+    Type: String
+    Default: arm64
+    AllowedValues: [arm64, x86]
+    Description: CPU architecture for EKS nodes (arm64 = Graviton, cost-optimized)
+
+  RepoUrl:
+    Type: String
+    Default: 'https://github.com/aws-samples/sample-OpenClaw-on-AWS-with-Bedrock.git'
+    Description: Git repo containing EKS Terraform modules
+
+  RepoBranch:
+    Type: String
+    Default: main
+    Description: Git branch to deploy from
+
+  TerraformVersion:
+    Type: String
+    Default: '1.12.0'
+    Description: Terraform version to install in CodeBuild and IDE
+
+  # --- Code Editor ---
+  CodeEditorUser:
+    Type: String
+    Default: participant
+    Description: OS username for the Code Editor IDE
+
+  InstanceType:
+    Type: String
+    Default: m8g.large
+    Description: EC2 instance type for Code Editor (Graviton ARM64)
+
+  InstanceVolumeSize:
+    Type: Number
+    Default: 40
+    Description: EBS volume size in GB for Code Editor instance
+
+  InstanceOperatingSystem:
+    Type: String
+    Default: AmazonLinux-2023
+    AllowedValues: ['AmazonLinux-2023', 'Ubuntu-22', 'Ubuntu-24']
+
+  HomeFolder:
+    Type: String
+    Default: /workshop
+    Description: Folder opened in Code Editor
+
+  # --- Workshop Studio ---
+  ParticipantRoleArn:
+    Type: String
+    Default: ''
+    Description: Workshop Studio participant role ARN (set via {{.ParticipantRoleArn}} magic variable)
+
+# =============================================================================
+# Conditions
+# =============================================================================
+Conditions:
+  IsAL2023: !Equals [!Ref InstanceOperatingSystem, 'AmazonLinux-2023']
+  IsGraviton: !Not [
+    !Equals [
+      !Select [0, !Split ['g', !Select [0, !Split ['.', !Ref InstanceType]]]],
+      !Select [0, !Split ['.', !Ref InstanceType]]
+    ]
+  ]
+  HasParticipantRole: !Not [!Equals [!Ref ParticipantRoleArn, '']]
+
+# =============================================================================
+# Mappings
+# =============================================================================
+Mappings:
+  ArmImage:
+    Ubuntu-22:
+      ImageId: '{{resolve:ssm:/aws/service/canonical/ubuntu/server/jammy/stable/current/arm64/hvm/ebs-gp2/ami-id}}'
+    Ubuntu-24:
+      ImageId: '{{resolve:ssm:/aws/service/canonical/ubuntu/server/noble/stable/current/arm64/hvm/ebs-gp3/ami-id}}'
+    AmazonLinux-2023:
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64}}'
+  AmdImage:
+    Ubuntu-22:
+      ImageId: '{{resolve:ssm:/aws/service/canonical/ubuntu/server/jammy/stable/current/amd64/hvm/ebs-gp2/ami-id}}'
+    Ubuntu-24:
+      ImageId: '{{resolve:ssm:/aws/service/canonical/ubuntu/server/noble/stable/current/amd64/hvm/ebs-gp3/ami-id}}'
+    AmazonLinux-2023:
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+  AWSRegionsPrefixListID:
+    ap-northeast-1:
+      PrefixList: pl-58a04531
+    ap-northeast-2:
+      PrefixList: pl-22a6434b
+    ap-south-1:
+      PrefixList: pl-9aa247f3
+    ap-southeast-1:
+      PrefixList: pl-31a34658
+    ap-southeast-2:
+      PrefixList: pl-b8a742d1
+    ca-central-1:
+      PrefixList: pl-38a64351
+    eu-central-1:
+      PrefixList: pl-a3a144ca
+    eu-north-1:
+      PrefixList: pl-fab65393
+    eu-west-1:
+      PrefixList: pl-4fa04526
+    eu-west-2:
+      PrefixList: pl-93a247fa
+    eu-west-3:
+      PrefixList: pl-75b1541c
+    sa-east-1:
+      PrefixList: pl-5da64334
+    us-east-1:
+      PrefixList: pl-3b927c52
+    us-east-2:
+      PrefixList: pl-b6a144df
+    us-west-1:
+      PrefixList: pl-4ea04527
+    us-west-2:
+      PrefixList: pl-82a045eb
+
+# =============================================================================
+# Resources
+# =============================================================================
+Resources:
+
+  # =========================================================================
+  # 1. IDE Password (Secrets Manager)
+  # =========================================================================
+
+  CodeEditorSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Name: !Sub
+        - ${ClusterName}-ide-${RandomGUID}
+        - RandomGUID: !Select [0, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]
+      GenerateSecretString:
+        PasswordLength: 16
+        SecretStringTemplate: !Sub '{"username":"${CodeEditorUser}"}'
+        GenerateStringKey: password
+        ExcludePunctuation: true
+
+  SecretPlaintextLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub lambda.${AWS::URLSuffix}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: GetSecret
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref CodeEditorSecret
+
+  SecretPlaintextLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Retrieve plaintext secret for SSM document parameter
+      Handler: index.lambda_handler
+      Runtime: python3.13
+      MemorySize: 128
+      Timeout: 10
+      Architectures: [arm64]
+      Role: !GetAtt SecretPlaintextLambdaRole.Arn
+      Code:
+        ZipFile: |
+          import boto3, json, cfnresponse, logging
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          def lambda_handler(event, context):
+              if event['RequestType'] == 'Delete':
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  return
+              try:
+                  secret = boto3.client('secretsmanager').get_secret_value(
+                      SecretId=event['ResourceProperties']['SecretArn'])
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS,
+                      json.loads(secret['SecretString']), noEcho=True)
+              except Exception as e:
+                  logger.error(e)
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {}, reason=str(e))
+
+  SecretPlaintext:
+    Type: Custom::SecretPlaintext
+    Properties:
+      ServiceToken: !GetAtt SecretPlaintextLambda.Arn
+      SecretArn: !Ref CodeEditorSecret
+
+  # =========================================================================
+  # 2. Terraform State Bucket (S3)
+  # =========================================================================
+
+  TerraformStateBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Sub '${ClusterName}-tfstate-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Purpose
+          Value: terraform-state
+
+  # =========================================================================
+  # 3. CodeBuild - Deploy EKS via Terraform
+  # =========================================================================
+
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ClusterName}-codebuild-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      # Admin access for Terraform (creates VPC, EKS, IAM roles, Helm charts, etc.)
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AdministratorAccess
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${ClusterName}-terraform-deploy'
+      Description: Deploy OpenClaw EKS infrastructure via Terraform
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      TimeoutInMinutes: 60
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: !Sub |
+          version: 0.2
+          phases:
+            install:
+              commands:
+                - echo "=== Installing Terraform ${TerraformVersion} ==="
+                - ARCH=$(uname -m | sed 's/aarch64/arm64/' | sed 's/x86_64/amd64/')
+                - curl -fsSL "https://releases.hashicorp.com/terraform/${TerraformVersion}/terraform_${TerraformVersion}_linux_$${ARCH}.zip" -o /tmp/terraform.zip
+                - unzip -q /tmp/terraform.zip -d /usr/local/bin/ && rm /tmp/terraform.zip
+                - terraform version
+            pre_build:
+              commands:
+                - echo "=== Cloning repo ==="
+                - git clone --depth 1 -b "${RepoBranch}" "${RepoUrl}" /tmp/openclaw
+                - cd /tmp/openclaw/eks/terraform
+                - echo "=== Configuring Terraform backend + variables ==="
+                - |
+                  cat > backend.tf <<EOF
+                  terraform {
+                    backend "s3" {
+                      bucket = "${TerraformStateBucket}"
+                      key    = "openclaw/terraform.tfstate"
+                      region = "${AWS::Region}"
+                    }
+                  }
+                  EOF
+                - |
+                  cat > generated.auto.tfvars <<EOF
+                  region       = "${AWS::Region}"
+                  name         = "${ClusterName}"
+                  architecture = "${Architecture}"
+                  enable_efs   = true
+                  EOF
+            build:
+              commands:
+                - cd /tmp/openclaw/eks/terraform
+                - terraform init -input=false
+                - terraform apply -auto-approve -input=false
+            post_build:
+              commands:
+                - cd /tmp/openclaw/eks/terraform
+                - CLUSTER_NAME=$(terraform output -raw cluster_name)
+                - CONFIGURE_KUBECTL=$(terraform output -raw configure_kubectl)
+                - BEDROCK_ROLE_ARN=$(terraform output -raw bedrock_role_arn)
+                - echo "=== Storing outputs in SSM Parameter Store ==="
+                - aws ssm put-parameter --name "/${ClusterName}/cluster-name" --value "$CLUSTER_NAME" --type String --overwrite --region "${AWS::Region}"
+                - aws ssm put-parameter --name "/${ClusterName}/configure-kubectl" --value "$CONFIGURE_KUBECTL" --type String --overwrite --region "${AWS::Region}"
+                - aws ssm put-parameter --name "/${ClusterName}/bedrock-role-arn" --value "$BEDROCK_ROLE_ARN" --type String --overwrite --region "${AWS::Region}"
+                - echo "=== Adding IDE role as EKS cluster admin ==="
+                - |
+                  aws eks create-access-entry \
+                    --cluster-name "$CLUSTER_NAME" \
+                    --principal-arn "$IDE_ROLE_ARN" \
+                    --type STANDARD \
+                    --region "${AWS::Region}" || true
+                - |
+                  aws eks associate-access-policy \
+                    --cluster-name "$CLUSTER_NAME" \
+                    --principal-arn "$IDE_ROLE_ARN" \
+                    --policy-arn "arn:${AWS::Partition}:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy" \
+                    --access-scope type=cluster \
+                    --region "${AWS::Region}" || true
+                - echo "=== Adding participant role as EKS cluster admin ==="
+                - |
+                  if [ -n "$PARTICIPANT_ROLE_ARN" ]; then
+                    aws eks create-access-entry \
+                      --cluster-name "$CLUSTER_NAME" \
+                      --principal-arn "$PARTICIPANT_ROLE_ARN" \
+                      --type STANDARD \
+                      --region "${AWS::Region}" || true
+                    aws eks associate-access-policy \
+                      --cluster-name "$CLUSTER_NAME" \
+                      --principal-arn "$PARTICIPANT_ROLE_ARN" \
+                      --policy-arn "arn:${AWS::Partition}:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy" \
+                      --access-scope type=cluster \
+                      --region "${AWS::Region}" || true
+                  fi
+                - echo "=== Signaling CloudFormation ==="
+                - |
+                  curl -X PUT -H 'Content-Type:' \
+                    --data-binary "{\"Status\":\"SUCCESS\",\"UniqueId\":\"build-$(date +%s)\",\"Data\":\"EKS cluster $CLUSTER_NAME deployed\"}" \
+                    "$WAIT_CONDITION_URL"
+      Environment:
+        Type: ARM_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux-aarch64-standard:3.0
+        EnvironmentVariables:
+          - Name: IDE_ROLE_ARN
+            Value: !GetAtt IdeRole.Arn
+          - Name: PARTICIPANT_ROLE_ARN
+            Value: !If [HasParticipantRole, !Ref ParticipantRoleArn, '']
+          - Name: WAIT_CONDITION_URL
+            Value: !Ref BuildWaitHandle
+      Artifacts:
+        Type: NO_ARTIFACTS
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Sub '/aws/codebuild/${ClusterName}-terraform'
+      Tags:
+        - Key: Project
+          Value: openclaw-workshop
+
+  BuildWaitHandle:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+  TriggerBuildLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub lambda.${AWS::URLSuffix}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: StartBuild
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: codebuild:StartBuild
+                Resource: !GetAtt CodeBuildProject.Arn
+
+  TriggerBuildLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Trigger CodeBuild project for Terraform deployment
+      Handler: index.lambda_handler
+      Runtime: python3.13
+      MemorySize: 128
+      Timeout: 30
+      Architectures: [arm64]
+      Role: !GetAtt TriggerBuildLambdaRole.Arn
+      Code:
+        ZipFile: |
+          import boto3, cfnresponse, logging
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          def lambda_handler(event, context):
+              if event['RequestType'] == 'Delete':
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  return
+              try:
+                  project = event['ResourceProperties']['ProjectName']
+                  resp = boto3.client('codebuild').start_build(projectName=project)
+                  build_id = resp['build']['id']
+                  logger.info(f'Started build: {build_id}')
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS,
+                      {'BuildId': build_id})
+              except Exception as e:
+                  logger.error(e)
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {}, reason=str(e))
+
+  TriggerBuild:
+    Type: Custom::TriggerBuild
+    DependsOn: CodeBuildProject
+    Properties:
+      ServiceToken: !GetAtt TriggerBuildLambda.Arn
+      ProjectName: !Ref CodeBuildProject
+
+  BuildWaitCondition:
+    Type: AWS::CloudFormation::WaitCondition
+    DependsOn: TriggerBuild
+    Properties:
+      Handle: !Ref BuildWaitHandle
+      Timeout: 3600
+      Count: 1
+
+  # =========================================================================
+  # 4. IAM Identity Center
+  # =========================================================================
+
+  IdentityCenterInstance:
+    Type: AWS::SSO::Instance
+    Properties:
+      Name: !Sub '${ClusterName}-sso'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-identity-center'
+        - Key: Project
+          Value: openclaw-workshop
+
+  # =========================================================================
+  # 5. Code Editor IDE - IAM Role
+  # =========================================================================
+
+  IdeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ClusterName}-ide-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - !Sub ec2.${AWS::URLSuffix}
+                - !Sub ssm.${AWS::URLSuffix}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/CloudWatchAgentServerPolicy
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonQDeveloperAccess
+      Policies:
+        - PolicyName: workshop-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: EKS
+                Effect: Allow
+                Action: eks:*
+                Resource: '*'
+              - Sid: Bedrock
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                  - bedrock:ListFoundationModels
+                  - bedrock:GetFoundationModel
+                  - bedrock:ListInferenceProfiles
+                Resource: '*'
+              - Sid: IAMForEKS
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:ListRoles
+                  - iam:TagRole
+                  - iam:PassRole
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:ListAttachedRolePolicies
+                  - iam:ListRolePolicies
+                  - iam:ListInstanceProfilesForRole
+                  - iam:CreatePolicy
+                  - iam:DeletePolicy
+                  - iam:GetPolicy
+                  - iam:GetPolicyVersion
+                  - iam:ListPolicyVersions
+                  - iam:CreatePolicyVersion
+                  - iam:DeletePolicyVersion
+                  - iam:TagPolicy
+                  - iam:CreateOpenIDConnectProvider
+                  - iam:DeleteOpenIDConnectProvider
+                  - iam:GetOpenIDConnectProvider
+                  - iam:TagOpenIDConnectProvider
+                  - iam:CreateInstanceProfile
+                  - iam:DeleteInstanceProfile
+                  - iam:GetInstanceProfile
+                  - iam:AddRoleToInstanceProfile
+                  - iam:RemoveRoleFromInstanceProfile
+                  - iam:TagInstanceProfile
+                  - iam:CreateServiceLinkedRole
+                Resource: '*'
+              - Sid: EC2
+                Effect: Allow
+                Action:
+                  - ec2:Describe*
+                  - ec2:Get*
+                  - ec2:List*
+                  - ec2:CreateTags
+                  - ec2:DeleteTags
+                  - ec2:RunInstances
+                  - ec2:TerminateInstances
+                  - ec2:CreateSecurityGroup
+                  - ec2:DeleteSecurityGroup
+                  - ec2:AuthorizeSecurityGroupIngress
+                  - ec2:RevokeSecurityGroupIngress
+                  - ec2:CreateLaunchTemplate
+                  - ec2:DeleteLaunchTemplate
+                Resource: '*'
+              - Sid: ECR
+                Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:CreateRepository
+                  - ecr:DescribeRepositories
+                  - ecr:ListTagsForResource
+                  - ecr:PutImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                Resource: '*'
+              - Sid: EFS
+                Effect: Allow
+                Action:
+                  - elasticfilesystem:Describe*
+                  - elasticfilesystem:Create*
+                  - elasticfilesystem:Delete*
+                  - elasticfilesystem:TagResource
+                Resource: '*'
+              - Sid: CloudFormation
+                Effect: Allow
+                Action: cloudformation:*
+                Resource: '*'
+              - Sid: STS
+                Effect: Allow
+                Action:
+                  - sts:GetCallerIdentity
+                  - sts:AssumeRole
+                  - sts:GetServiceBearerToken
+                Resource: '*'
+              - Sid: SSMParams
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:PutParameter
+                  - ssm:DeleteParameter
+                  - ssm:DescribeParameters
+                Resource: '*'
+              - Sid: SecretsManager
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource: !Ref CodeEditorSecret
+              - Sid: S3Terraform
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                  - s3:DeleteObject
+                Resource:
+                  - !GetAtt TerraformStateBucket.Arn
+                  - !Sub '${TerraformStateBucket.Arn}/*'
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:PutRetentionPolicy
+                Resource: '*'
+              - Sid: ELB
+                Effect: Allow
+                Action:
+                  - elasticloadbalancing:Describe*
+                Resource: '*'
+              - Sid: SQS
+                Effect: Allow
+                Action: sqs:*
+                Resource: !Sub 'arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:${ClusterName}*'
+              - Sid: Pricing
+                Effect: Allow
+                Action: pricing:GetProducts
+                Resource: '*'
+              - Sid: KMS
+                Effect: Allow
+                Action:
+                  - kms:Describe*
+                  - kms:List*
+                  - kms:Get*
+                Resource: '*'
+
+  IdeInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref IdeRole
+
+  # =========================================================================
+  # 6. Code Editor IDE - EC2 Instance + Networking
+  # =========================================================================
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Code Editor - allow CloudFront ingress (${ClusterName})'
+      SecurityGroupIngress:
+        - Description: Allow HTTP from CloudFront origin-facing
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourcePrefixListId: !FindInMap [AWSRegionsPrefixListID, !Ref 'AWS::Region', PrefixList]
+
+  CodeEditorInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !If
+        - IsGraviton
+        - !FindInMap [ArmImage, !Ref InstanceOperatingSystem, ImageId]
+        - !FindInMap [AmdImage, !Ref InstanceOperatingSystem, ImageId]
+      InstanceType: !Ref InstanceType
+      BlockDeviceMappings:
+        - DeviceName: !If [IsAL2023, /dev/xvda, /dev/sda1]
+          Ebs:
+            VolumeSize: !Ref InstanceVolumeSize
+            VolumeType: gp3
+            DeleteOnTermination: true
+            Encrypted: true
+      Monitoring: true
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      IamInstanceProfile: !Ref IdeInstanceProfile
+      UserData:
+        Fn::Base64: !Sub |
+          #cloud-config
+          hostname: ${ClusterName}-ide
+          runcmd:
+            - mkdir -p ${HomeFolder} && chown -R ${CodeEditorUser}:${CodeEditorUser} ${HomeFolder}
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-ide'
+        - Key: Project
+          Value: openclaw-workshop
+
+  CodeEditorInstanceEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  ElasticIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt CodeEditorInstanceEIP.AllocationId
+      InstanceId: !Ref CodeEditorInstance
+
+  # =========================================================================
+  # 7. CloudFront Distribution
+  # =========================================================================
+
+  CachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        DefaultTTL: 86400
+        MaxTTL: 31536000
+        MinTTL: 1
+        Name: !Sub
+          - ${ClusterName}-ide-${RandomGUID}
+          - RandomGUID: !Select [0, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]
+        ParametersInCacheKeyAndForwardedToOrigin:
+          CookiesConfig:
+            CookieBehavior: all
+          EnableAcceptEncodingGzip: false
+          HeadersConfig:
+            HeaderBehavior: whitelist
+            Headers:
+              - Accept-Charset
+              - Authorization
+              - Origin
+              - Accept
+              - Referer
+              - Host
+              - Accept-Language
+              - Accept-Encoding
+              - Accept-Datetime
+          QueryStringsConfig:
+            QueryStringBehavior: all
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    DependsOn: ElasticIPAssociation
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        HttpVersion: http2and3
+        CacheBehaviors:
+          - AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            Compress: false
+            OriginRequestPolicyId: 216adef6-5c7f-47e4-b989-5492eafa07d3
+            TargetOriginId: !Sub 'IDE-${ClusterName}'
+            ViewerProtocolPolicy: allow-all
+            PathPattern: '/proxy/*'
+        DefaultCacheBehavior:
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+          CachePolicyId: !Ref CachePolicy
+          OriginRequestPolicyId: 216adef6-5c7f-47e4-b989-5492eafa07d3
+          TargetOriginId: !Sub 'IDE-${ClusterName}'
+          ViewerProtocolPolicy: allow-all
+        Origins:
+          - DomainName: !GetAtt CodeEditorInstance.PublicDnsName
+            Id: !Sub 'IDE-${ClusterName}'
+            CustomOriginConfig:
+              OriginProtocolPolicy: http-only
+
+  # =========================================================================
+  # 8. IDE Bootstrap - SSM Document
+  # =========================================================================
+
+  InstallExtensionSSMDoc:
+    Type: AWS::SSM::Document
+    Properties:
+      DocumentType: Command
+      Content:
+        schemaVersion: '2.2'
+        description: Install Code Editor Extension
+        parameters:
+          ExtensionId:
+            type: String
+          CodeEditorUser:
+            type: String
+          MaxRetries:
+            type: String
+            default: '3'
+          FailureReturnValue:
+            type: String
+            default: '0'
+        mainSteps:
+          - name: InstallExtension
+            action: aws:runShellScript
+            inputs:
+              timeoutSeconds: 300
+              runCommand:
+                - '#!/bin/bash'
+                - |
+                  max_retries={{ MaxRetries }}
+                  retry_count=0
+                  while [ $retry_count -lt $max_retries ]; do
+                    sudo -i -u {{ CodeEditorUser }} code-editor-server --install-extension "{{ ExtensionId }}" --force 2>&1
+                    if sudo -i -u {{ CodeEditorUser }} code-editor-server --list-extensions | grep -qi "{{ ExtensionId }}"; then
+                      echo "Installed {{ ExtensionId }}"
+                      exit 0
+                    fi
+                    retry_count=$((retry_count + 1))
+                    sleep 5
+                  done
+                  echo "Failed to install {{ ExtensionId }} after $max_retries attempts"
+                  exit {{ FailureReturnValue }}
+
+  CodeEditorSSMDoc:
+    Type: AWS::SSM::Document
+    Properties:
+      DocumentType: Command
+      Content:
+        schemaVersion: '2.2'
+        description: Bootstrap Code Editor with workshop tools (kubectl, helm, terraform)
+        parameters:
+          LinuxFlavor:
+            type: String
+            default: al2023
+          CodeEditorPassword:
+            type: String
+            default: !Ref AWS::StackId
+        mainSteps:
+          # ── Base packages ──
+          - name: InstallCloudWatchAgent
+            action: aws:configurePackage
+            inputs:
+              name: AmazonCloudWatchAgent
+              action: Install
+          - name: ConfigureCloudWatchAgent
+            action: aws:runDocument
+            inputs:
+              documentType: SSMDocument
+              documentPath: AmazonCloudWatch-ManageAgent
+              documentParameters:
+                action: configure
+                mode: ec2
+                optionalConfigurationSource: default
+                optionalRestart: 'yes'
+          - name: InstallBasePackagesDnf
+            action: aws:runShellScript
+            precondition:
+              StringEquals: ['{{ LinuxFlavor }}', 'al2023']
+            inputs:
+              timeoutSeconds: 300
+              runCommand:
+                - '#!/bin/bash'
+                - set -euo pipefail
+                - dnf install -y --allowerasing curl gnupg whois argon2 unzip nginx openssl jq git docker
+                - systemctl enable --now docker
+          - name: InstallBasePackagesApt
+            action: aws:runShellScript
+            precondition:
+              StringEquals: ['{{ LinuxFlavor }}', 'ubuntu']
+            inputs:
+              timeoutSeconds: 300
+              runCommand:
+                - '#!/bin/bash'
+                - set -euo pipefail
+                - dpkg --configure -a
+                - apt-get -q update && DEBIAN_FRONTEND=noninteractive apt-get install -y -q curl gnupg whois argon2 unzip nginx openssl jq git docker.io
+                - systemctl enable --now docker
+          # ── User setup ──
+          - name: AddUserDnf
+            action: aws:runShellScript
+            precondition:
+              StringEquals: ['{{ LinuxFlavor }}', 'al2023']
+            inputs:
+              timeoutSeconds: 60
+              runCommand:
+                - '#!/bin/bash'
+                - set -euo pipefail
+                - !Sub |
+                  adduser -c '' ${CodeEditorUser} 2>/dev/null || true
+                  echo "${CodeEditorUser}:{{ CodeEditorPassword }}" | chpasswd
+                  usermod -aG wheel ${CodeEditorUser}
+                  usermod -aG docker ${CodeEditorUser}
+                  sed -i 's/# %wheel/%wheel/g' /etc/sudoers
+          - name: AddUserApt
+            action: aws:runShellScript
+            precondition:
+              StringEquals: ['{{ LinuxFlavor }}', 'ubuntu']
+            inputs:
+              timeoutSeconds: 60
+              runCommand:
+                - '#!/bin/bash'
+                - set -euo pipefail
+                - !Sub |
+                  if [[ "${CodeEditorUser}" != "ubuntu" ]]; then
+                    adduser --disabled-password --gecos '' ${CodeEditorUser} 2>/dev/null || true
+                    echo "${CodeEditorUser}:{{ CodeEditorPassword }}" | chpasswd
+                    usermod -aG sudo ${CodeEditorUser}
+                  fi
+                  usermod -aG docker ${CodeEditorUser}
+                  tee /etc/sudoers.d/91-workshop-user <<EOF
+                  ${CodeEditorUser} ALL=(ALL) NOPASSWD:ALL
+                  EOF
+                  mkdir -p /home/${CodeEditorUser}/.local/bin
+                  chown -R ${CodeEditorUser}:${CodeEditorUser} /home/${CodeEditorUser}
+          # ── Environment ──
+          - name: UpdateProfile
+            action: aws:runShellScript
+            inputs:
+              timeoutSeconds: 60
+              runCommand:
+                - '#!/bin/bash'
+                - set -euo pipefail
+                - echo LANG=en_US.utf-8 >> /etc/environment
+                - echo LC_ALL=en_US.UTF-8 >> /etc/environment
+                - !Sub |
+                  cat >> /home/${CodeEditorUser}/.bashrc <<'ENVEOF'
+                  export PATH=$PATH:/home/${CodeEditorUser}/.local/bin:/usr/local/bin
+                  export AWS_REGION=${AWS::Region}
+                  export AWS_ACCOUNTID=${AWS::AccountId}
+                  export CLUSTER_NAME=${ClusterName}
+                  export EKS_CLUSTER_NAME=${ClusterName}
+                  export TF_STATE_BUCKET=${TerraformStateBucket}
+                  export NEXT_TELEMETRY_DISABLED=1
+                  export PS1='\[\033[01;32m\]\u@openclaw-workshop:\[\033[01;34m\]\w\[\033[00m\]\$ '
+                  ENVEOF
+                - !Sub chown -R ${CodeEditorUser}:${CodeEditorUser} /home/${CodeEditorUser}
+          # ── AWS CLI ──
+          - name: InstallAWSCLI
+            action: aws:runShellScript
+            inputs:
+              timeoutSeconds: 300
+              runCommand:
+                - '#!/bin/bash'
+                - set -euo pipefail
+                - !Sub curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o /tmp/aws-cli.zip
+                - unzip -q -d /tmp /tmp/aws-cli.zip
+                - sudo /tmp/aws/install --update
+                - rm -rf /tmp/aws /tmp/aws-cli.zip
+                - aws --version
+          # ── Git config ──
+          - name: ConfigureGit
+            action: aws:runShellScript
+            inputs:
+              timeoutSeconds: 60
+              runCommand:
+                - '#!/bin/bash'
+                - !Sub |
+                  sudo -u ${CodeEditorUser} git config --global user.email "participant@workshop.aws"
+                  sudo -u ${CodeEditorUser} git config --global user.name "Workshop Participant"
+                  sudo -u ${CodeEditorUser} git config --global init.defaultBranch main
+          # ── Workshop tools: kubectl, helm, terraform, eksctl ──
+          - name: InstallWorkshopTools
+            action: aws:runShellScript
+            inputs:
+              timeoutSeconds: 600
+              runCommand:
+                - '#!/bin/bash'
+                - set -euo pipefail
+                - ARCH=$(uname -m | sed 's/aarch64/arm64/' | sed 's/x86_64/amd64/')
+                - ARCH_ALT=$(uname -m | sed 's/aarch64/arm64/' | sed 's/x86_64/amd64/')
+                - echo "=== Installing kubectl ==="
+                - !Sub |
+                  curl -fsSL "https://dl.k8s.io/release/v1.35.0/bin/linux/$ARCH/kubectl" -o /usr/local/bin/kubectl
+                  chmod +x /usr/local/bin/kubectl
+                  kubectl version --client
+                - echo "=== Installing helm ==="
+                - curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+                - helm version --short
+                - echo "=== Installing terraform ==="
+                - !Sub |
+                  curl -fsSL "https://releases.hashicorp.com/terraform/${TerraformVersion}/terraform_${TerraformVersion}_linux_$ARCH.zip" -o /tmp/terraform.zip
+                  unzip -q /tmp/terraform.zip -d /usr/local/bin/ && rm /tmp/terraform.zip
+                  terraform version
+                - echo "=== Installing eksctl ==="
+                - |
+                  PLATFORM=$(uname -s)_$(uname -m | sed 's/aarch64/arm64/' | sed 's/x86_64/amd64/')
+                  curl -fsSL "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$PLATFORM.tar.gz" | tar xz -C /usr/local/bin
+                  eksctl version
+          # ── Configure kubectl ──
+          - name: ConfigureKubectl
+            action: aws:runShellScript
+            inputs:
+              timeoutSeconds: 120
+              runCommand:
+                - '#!/bin/bash'
+                - set -euo pipefail
+                - !Sub |
+                  CONFIGURE_CMD=$(aws ssm get-parameter --name "/${ClusterName}/configure-kubectl" --query Parameter.Value --output text --region ${AWS::Region})
+                  sudo -i -u ${CodeEditorUser} bash -c "$CONFIGURE_CMD"
+                  echo "=== Verifying cluster access ==="
+                  sudo -i -u ${CodeEditorUser} kubectl get nodes || echo "Cluster access will be available shortly"
+          # ── Clone workshop repo ──
+          - name: CloneWorkshopRepo
+            action: aws:runShellScript
+            inputs:
+              timeoutSeconds: 300
+              runCommand:
+                - '#!/bin/bash'
+                - set -euo pipefail
+                - !Sub |
+                  mkdir -p ${HomeFolder} && chown -R ${CodeEditorUser}:${CodeEditorUser} ${HomeFolder}
+                  sudo -i -u ${CodeEditorUser} git clone --depth 1 -b "${RepoBranch}" "${RepoUrl}" ${HomeFolder}
+                  # Configure terraform backend in cloned repo for participant use
+                  cat > ${HomeFolder}/eks/terraform/backend.tf <<EOF
+                  terraform {
+                    backend "s3" {
+                      bucket = "${TerraformStateBucket}"
+                      key    = "openclaw/terraform.tfstate"
+                      region = "${AWS::Region}"
+                    }
+                  }
+                  EOF
+                  chown -R ${CodeEditorUser}:${CodeEditorUser} ${HomeFolder}
+                  # Init terraform so participant can use it immediately
+                  sudo -i -u ${CodeEditorUser} bash -c "cd ${HomeFolder}/eks/terraform && terraform init -input=false"
+          # ── Code Editor installation ──
+          - name: InstallCodeEditor
+            action: aws:runShellScript
+            inputs:
+              timeoutSeconds: 600
+              runCommand:
+                - '#!/bin/bash'
+                - set -euo pipefail
+                - !Sub export CodeEditorUser=${CodeEditorUser}
+                - curl -fsSL https://code-editor.amazonaws.com/content/code-editor-server/dist/aws-workshop-studio/install.sh | bash -s -- 2>&1
+          # ── Nginx reverse proxy ──
+          - name: ConfigureNginx
+            action: aws:runShellScript
+            inputs:
+              timeoutSeconds: 60
+              runCommand:
+                - '#!/bin/bash'
+                - set -euo pipefail
+                - !Sub |
+                  tee /etc/nginx/conf.d/code-editor.conf <<EOF
+                  server {
+                      listen 80;
+                      listen [::]:80;
+                      server_name *.cloudfront.net;
+                      proxy_set_header Host \$host;
+                      proxy_set_header X-Real-IP \$remote_addr;
+                      proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+                      proxy_set_header X-Forwarded-Proto \$scheme;
+                      proxy_set_header Upgrade \$http_upgrade;
+                      proxy_set_header Connection "upgrade";
+                      proxy_buffering off;
+                      proxy_set_header Accept-Encoding gzip;
+                      location / {
+                          proxy_pass http://localhost:8080/;
+                      }
+                  }
+                  EOF
+                - systemctl enable nginx 2>&1
+                - systemctl restart nginx
+                - nginx -t 2>&1
+          # ── Auth token ──
+          - name: ConfigureAuthToken
+            action: aws:runShellScript
+            inputs:
+              timeoutSeconds: 60
+              runCommand:
+                - '#!/bin/bash'
+                - set -euo pipefail
+                - !Sub |
+                  sudo -u ${CodeEditorUser} mkdir -p /home/${CodeEditorUser}/.code-editor-server/data
+                  echo -n "{{ CodeEditorPassword }}" > /home/${CodeEditorUser}/.code-editor-server/data/token
+                  chown -R ${CodeEditorUser}:${CodeEditorUser} /home/${CodeEditorUser}/.code-editor-server
+          # ── Code Editor settings ──
+          - name: ConfigureCodeEditor
+            action: aws:runShellScript
+            inputs:
+              timeoutSeconds: 60
+              runCommand:
+                - '#!/bin/bash'
+                - set -euo pipefail
+                - !Sub |
+                  mkdir -p /home/${CodeEditorUser}/.code-editor-server/data/User
+                  tee /home/${CodeEditorUser}/.code-editor-server/data/User/settings.json <<EOF
+                  {
+                    "aws.telemetry": false,
+                    "extensions.autoUpdate": false,
+                    "extensions.autoCheckUpdates": false,
+                    "telemetry.telemetryLevel": "off",
+                    "security.workspace.trust.startupPrompt": "never",
+                    "security.workspace.trust.enabled": false,
+                    "security.workspace.trust.banner": "never",
+                    "security.workspace.trust.emptyWindow": false,
+                    "workbench.startupEditor": "none",
+                    "terminal.integrated.cwd": "${HomeFolder}",
+                    "auto-run-command.rules": [{"command": "workbench.action.terminal.new"}]
+                  }
+                  EOF
+                  touch /home/${CodeEditorUser}/.hushlogin
+                  chown -R ${CodeEditorUser}:${CodeEditorUser} /home/${CodeEditorUser}
+                  systemctl enable --now code-editor@${CodeEditorUser}
+                  systemctl restart code-editor@${CodeEditorUser}
+          # ── Extensions ──
+          - name: InstallAWSToolkit
+            action: aws:runDocument
+            inputs:
+              documentType: SSMDocument
+              documentPath: !Ref InstallExtensionSSMDoc
+              documentParameters:
+                ExtensionId: AmazonWebServices.aws-toolkit-vscode
+                CodeEditorUser: !Ref CodeEditorUser
+          - name: InstallAmazonQ
+            action: aws:runDocument
+            inputs:
+              documentType: SSMDocument
+              documentPath: !Ref InstallExtensionSSMDoc
+              documentParameters:
+                ExtensionId: AmazonWebServices.amazon-q-vscode
+                CodeEditorUser: !Ref CodeEditorUser
+          - name: InstallAutoRunCommand
+            action: aws:runDocument
+            inputs:
+              documentType: SSMDocument
+              documentPath: !Ref InstallExtensionSSMDoc
+              documentParameters:
+                ExtensionId: synedra.auto-run-command
+                CodeEditorUser: !Ref CodeEditorUser
+
+  # =========================================================================
+  # 9. Lambda - Run SSM Document on EC2
+  # =========================================================================
+
+  SSMDocLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub lambda.${AWS::URLSuffix}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SSMOnEC2
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ssm:SendCommand
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/${CodeEditorSSMDoc}'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/AmazonCloudWatch-ManageAgent'
+                  - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${CodeEditorInstance}'
+              - Effect: Allow
+                Action:
+                  - ssm:ListCommandInvocations
+                  - ssm:GetCommandInvocation
+                Resource: '*'
+
+  RunSSMDocLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Run SSM document on Code Editor EC2 instance
+      Handler: index.lambda_handler
+      Runtime: python3.13
+      MemorySize: 128
+      Timeout: 600
+      Architectures: [arm64]
+      Environment:
+        Variables:
+          RetrySleep: 2900
+          AbortTimeRemaining: 5000
+      Role: !GetAtt SSMDocLambdaRole.Arn
+      Code:
+        ZipFile: |
+          import boto3, cfnresponse, logging, time, os
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          def lambda_handler(event, context):
+              if event['RequestType'] != 'Create':
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  return
+              sleep_ms = int(os.environ.get('RetrySleep'))
+              abort_ms = int(os.environ.get('AbortTimeRemaining'))
+              props = event['ResourceProperties']
+              instance_id = props['InstanceId']
+              doc_name = props['DocumentName']
+              log_group = props['CloudWatchLogGroupName']
+              params = {}
+              for k, v in props.items():
+                  if k not in ('ServiceToken', 'ServiceTimeout', 'InstanceId',
+                               'DocumentName', 'CloudWatchLogGroupName', 'PhysicalResourceId'):
+                      params[k] = [v]
+              ssm = boto3.client('ssm')
+              retry = True
+              attempt = 0
+              while retry:
+                  attempt += 1
+                  remaining = context.get_remaining_time_in_millis()
+                  logger.info(f'Attempt {attempt}, remaining {remaining/1000}s')
+                  try:
+                      resp = ssm.send_command(
+                          InstanceIds=[instance_id], DocumentName=doc_name,
+                          CloudWatchOutputConfig={'CloudWatchLogGroupName': log_group,
+                                                  'CloudWatchOutputEnabled': True},
+                          Parameters=params)
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS,
+                          {'CommandId': resp['Command']['CommandId']})
+                      retry = False
+                  except ssm.exceptions.InvalidInstanceId:
+                      if remaining > abort_ms:
+                          logger.info(f'Instance not ready, sleeping {sleep_ms/1000}s')
+                          time.sleep(sleep_ms / 1000)
+                      else:
+                          cfnresponse.send(event, context, cfnresponse.FAILED, {},
+                              reason='Instance not ready, timed out')
+                          retry = False
+                  except Exception as e:
+                      logger.error(e)
+                      cfnresponse.send(event, context, cfnresponse.FAILED, {}, reason=str(e))
+                      retry = False
+
+  RunCodeEditorSSMDoc:
+    Type: Custom::RunSSMDoc
+    DependsOn: BuildWaitCondition
+    Properties:
+      ServiceToken: !GetAtt RunSSMDocLambda.Arn
+      ServiceTimeout: 305
+      InstanceId: !Ref CodeEditorInstance
+      DocumentName: !Ref CodeEditorSSMDoc
+      CloudWatchLogGroupName: !Sub '/aws/ssm/${ClusterName}-ide-bootstrap'
+      CodeEditorPassword: !GetAtt SecretPlaintext.password
+      LinuxFlavor: !If [IsAL2023, 'al2023', 'ubuntu']
+
+  # =========================================================================
+  # 10. Health Check + SSM Doc Completion Check
+  # =========================================================================
+
+  HealthCheckLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub lambda.${AWS::URLSuffix}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  HealthCheckLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Health check Code Editor via CloudFront /healthz endpoint
+      Handler: index.lambda_handler
+      Runtime: python3.13
+      MemorySize: 128
+      Timeout: 600
+      Architectures: [arm64]
+      Environment:
+        Variables:
+          RetrySleep: 2900
+          AbortTimeRemaining: 5000
+      Role: !GetAtt HealthCheckLambdaRole.Arn
+      Code:
+        ZipFile: |
+          import json, cfnresponse, logging, time, os, http.client
+          from urllib.parse import urlparse
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          def check_url(url):
+              try:
+                  parsed = urlparse(url)
+                  conn = http.client.HTTPSConnection(parsed.netloc) if parsed.scheme == 'https' \
+                      else http.client.HTTPConnection(parsed.netloc)
+                  conn.request("GET", parsed.path or "/")
+                  resp = conn.getresponse()
+                  if 200 <= resp.status < 400:
+                      data = json.loads(resp.read().decode('utf-8'))
+                      return 'hasActiveConnections' in data
+                  return False
+              except Exception:
+                  return False
+              finally:
+                  if 'conn' in locals(): conn.close()
+          def lambda_handler(event, context):
+              if event['RequestType'] != 'Create':
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  return
+              sleep_ms = int(os.environ.get('RetrySleep'))
+              abort_ms = int(os.environ.get('AbortTimeRemaining'))
+              url = event['ResourceProperties']['Url']
+              attempt = 0
+              ok = False
+              while not ok:
+                  attempt += 1
+                  remaining = context.get_remaining_time_in_millis()
+                  logger.info(f'Health attempt {attempt}, remaining {remaining/1000}s')
+                  ok = check_url(url)
+                  if not ok:
+                      if remaining > abort_ms:
+                          time.sleep(sleep_ms / 1000)
+                      else:
+                          cfnresponse.send(event, context, cfnresponse.FAILED, {},
+                              reason=f'Health check timed out after {attempt} attempts')
+                          return
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+
+  Healthcheck:
+    Type: Custom::HealthCheck
+    Properties:
+      ServiceToken: !GetAtt HealthCheckLambda.Arn
+      ServiceTimeout: 610
+      Url: !Sub 'https://${CloudFrontDistribution.DomainName}/healthz'
+
+  CheckSSMDocLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Poll SSM document execution until completion
+      Handler: index.lambda_handler
+      Runtime: python3.13
+      MemorySize: 128
+      Timeout: 600
+      Architectures: [arm64]
+      Environment:
+        Variables:
+          RetrySleep: 2900
+          AbortTimeRemaining: 5000
+      Role: !GetAtt SSMDocLambdaRole.Arn
+      Code:
+        ZipFile: |
+          import boto3, cfnresponse, logging, time, os
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          def lambda_handler(event, context):
+              if event['RequestType'] != 'Create':
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  return
+              sleep_ms = int(os.environ.get('RetrySleep'))
+              abort_ms = int(os.environ.get('AbortTimeRemaining'))
+              props = event['ResourceProperties']
+              instance_id, doc_name = props['InstanceId'], props['DocumentName']
+              ssm = boto3.client('ssm')
+              retry = True
+              attempt = 0
+              while retry:
+                  attempt += 1
+                  remaining = context.get_remaining_time_in_millis()
+                  logger.info(f'Check attempt {attempt}, remaining {remaining/1000}s')
+                  try:
+                      resp = ssm.list_command_invocations(InstanceId=instance_id, Details=True)
+                      for inv in resp['CommandInvocations']:
+                          if inv['DocumentName'] == doc_name:
+                              status = inv['Status']
+                              if status == 'Success':
+                                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                                  return
+                              elif status in ('Failed', 'Cancelled', 'TimedOut'):
+                                  reason = f'SSM doc {doc_name} {status}'
+                                  for step in inv.get('CommandPlugins', []):
+                                      if step['Status'] != 'Success':
+                                          reason += f" | {step['Name']}: {step.get('Output', '')[:200]}"
+                                  cfnresponse.send(event, context, cfnresponse.FAILED, {}, reason=reason)
+                                  return
+                      if remaining > abort_ms:
+                          time.sleep(sleep_ms / 1000)
+                      else:
+                          cfnresponse.send(event, context, cfnresponse.FAILED, {},
+                              reason='SSM doc check timed out')
+                          retry = False
+                  except Exception as e:
+                      logger.error(e)
+                      cfnresponse.send(event, context, cfnresponse.FAILED, {}, reason=str(e))
+                      retry = False
+
+  CheckCodeEditorSSMDoc:
+    Type: Custom::CheckSSMDoc
+    DependsOn: Healthcheck
+    Properties:
+      ServiceToken: !GetAtt CheckSSMDocLambda.Arn
+      ServiceTimeout: 610
+      InstanceId: !Ref CodeEditorInstance
+      DocumentName: !Ref CodeEditorSSMDoc
+
+# =============================================================================
+# Outputs
+# =============================================================================
+Outputs:
+  IdeUrl:
+    Description: Code Editor IDE URL
+    Value: !Sub 'https://${CloudFrontDistribution.DomainName}/?folder=${HomeFolder}&tkn=${SecretPlaintext.password}'
+
+  IdePasswordConsoleUrl:
+    Description: IDE password (view in Secrets Manager console)
+    Value: !Sub 'https://console.aws.amazon.com/secretsmanager/secret?name=${ClusterName}-ide-&region=${AWS::Region}'
+
+  ClusterName:
+    Description: EKS cluster name
+    Value: !Ref ClusterName
+
+  TerraformStateBucket:
+    Description: S3 bucket storing Terraform state
+    Value: !Ref TerraformStateBucket
+
+  CodeBuildLogGroup:
+    Description: CodeBuild log group (Terraform deployment logs)
+    Value: !Sub '/aws/codebuild/${ClusterName}-terraform'
+
+  IdentityCenterInstanceArn:
+    Description: IAM Identity Center instance ARN
+    Value: !GetAtt IdentityCenterInstance.InstanceArn
