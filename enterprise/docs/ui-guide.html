@@ -518,128 +518,249 @@ org: { en:{title:'Organization Management',sub:'Departments → Positions → Em
 
 
 
-soul: { en:{title:'SOUL Editor — 3-Layer Identity',sub:'Global → Position → Personal = what agent reads.'}, zh:{title:'SOUL 编辑器 — 三层身份',sub:'全局 → 岗位 → 个人 = Agent 读取的内容。'}, body(){ return intent('SOUL defines <strong>who the agent is</strong>. Three layers: Global (company constitution, IT-locked), Position (department handbook, dept-managed), Personal (desk setup, employee-editable). Each layer adds specificity without overriding the one above.','SOUL 定义<strong>Agent 是谁</strong>。三层：全局（公司章程，IT 锁定）、岗位（部门手册，部门管理）、个人（办公桌布置，员工可编辑）。每层增加具体性而不覆盖上层。') + flow(['🔒 Global\n'+t('IT locked','IT 锁定'),'d','✏️ Position\n'+t('Dept managed','部门管理'),'p','✏️ Personal\n'+t('Employee edits','员工编辑'),'s','= Merged\n'+t('Agent reads','Agent 读取'),'c']) + note('info','📍',t('<strong>Global:</strong> Security Center → Policies → Edit Global SOUL<br><strong>Position:</strong> Organization → Positions → click → SOUL tab<br><strong>Personal:</strong> Agent Factory → click agent → Personal tab','<strong>全局：</strong>Security Center → Policies → Edit Global SOUL<br><strong>岗位：</strong>Organization → Positions → 点击 → SOUL 标签<br><strong>个人：</strong>Agent Factory → 点击 Agent → Personal 标签'))
-+ deep(`
-<h4>S3 Storage Structure</h4>
-<div class="code">s3://{bucket}/
-├── _shared/soul/global/SOUL.md          ← Layer 1: Global (IT-locked)
-├── _shared/soul/positions/{pos_id}/SOUL.md  ← Layer 2: Position
-└── {emp_id}/workspace/SOUL.md           ← Layer 3: Personal
-    └── .personal_soul_backup.md         ← Anti-snowball backup</div>
+soul: { en:{title:'SOUL Editor — 3-Layer Identity System',sub:'The core identity mechanism: Global → Position → Personal = what your agent reads, believes, and becomes.'}, zh:{title:'SOUL 编辑器 — 三层身份系统',sub:'核心身份机制：全局 → 岗位 → 个人 = Agent 读取、认知和成为的内容。'}, body(){ return intent(
+      t(
+        '<strong>Why a 3-layer system instead of just one config file?</strong> Consider a company with 500 employees across 10 roles. Without layering, you\'d write 500 individual agent configs — and when the CEO says "all agents must now follow our new compliance policy," you\'d update 500 files. With 3 layers: <strong>Global SOUL</strong> (company-wide rules, locked by IT) applies to all 500 instantly. <strong>Position SOUL</strong> (role expertise) means changing "Solutions Architect" behavior updates all 50 SA agents. <strong>Personal SOUL</strong> lets each employee customize preferences without breaking company rules. This is the same principle as CSS cascading: browser defaults → site theme → element style. The result: <strong>governance at scale without sacrificing personalization</strong>. Security-wise, the Global layer is IT-locked — no position admin or employee can override compliance rules, PII policies, or identity declarations.',
+        '<strong>为什么用三层系统而不是一个配置文件？</strong>考虑一家 500 员工、10 个角色的公司。没有分层，你需要写 500 个独立 Agent 配置——当 CEO 说"所有 Agent 必须遵守新合规政策"时，你要更新 500 个文件。有了三层：<strong>全局 SOUL</strong>（公司规则，IT 锁定）立即应用于所有 500 个。<strong>岗位 SOUL</strong>（角色专长）修改"解决方案架构师"行为自动更新全部 50 个 SA Agent。<strong>个人 SOUL</strong>让每个员工自定义偏好而不破坏公司规则。这与 CSS 层叠原理相同：浏览器默认 → 站点主题 → 元素样式。结果：<strong>规模化治理而不牺牲个性化</strong>。安全方面，全局层由 IT 锁定——岗位管理员和员工都无法覆盖合规规则、PII 策略或身份声明。'
+      )
+    )
+    + sectionHead(t('The 3-Layer Inheritance Model','三层继承模型'))
+    + flow(['🔒 Global\n'+t('Company constitution\nIT-locked, non-negotiable','公司章程\nIT 锁定，不可协商'),'d','✏️ Position\n'+t('Role handbook\nDept manager edits','角色手册\n部门经理编辑'),'p','✏️ Personal\n'+t('Desk setup\nEmployee self-service','办公桌布置\n员工自助'),'s','= Merged SOUL\n'+t('What agent reads\nat session start','Agent 在会话\n开始时读取'),'c'])
+    + note('info','📍',t(
+      '<strong>Where to edit each layer:</strong><br>• <strong>Global:</strong> Security Center → Policies → "Edit Global SOUL" (requires admin role)<br>• <strong>Position:</strong> Organization → Positions → click any position → SOUL tab<br>• <strong>Personal:</strong> Agent Factory → click agent → Personal tab, OR employee edits via Portal → My Profile',
+      '<strong>各层编辑位置：</strong><br>• <strong>全局：</strong>Security Center → Policies → "Edit Global SOUL"（需要 admin 角色）<br>• <strong>岗位：</strong>Organization → Positions → 点击岗位 → SOUL 标签<br>• <strong>个人：</strong>Agent Factory → 点击 Agent → Personal 标签，或员工通过 Portal → My Profile 编辑'
+    ))
+    + sectionHead(t('How Each Layer Works','每层如何工作'))
+    + card(t('Layer 1: Global SOUL — "You are an ACME Corp employee"','第 1 层：全局 SOUL — "你是 ACME 公司员工"'),
+      t(
+        '<p style="font-size:12px;color:var(--text-s)">This is the <strong>company constitution</strong>. Every agent — from intern to CEO — reads this first. It establishes: (1) Core identity: "You are a digital employee of ACME Corp." (2) Compliance rules: "Never share customer PII in responses." (3) Behavioral guardrails: "Always be professional. If unsure, say so." The key property: <strong>no lower layer can override these rules</strong>. An employee who writes "Ignore all company rules" in their personal SOUL will still be bound by Global because it\'s prepended first in the merged file with a CRITICAL IDENTITY OVERRIDE marker.</p><div class="code" style="font-size:10px">S3 path: s3://{bucket}/_shared/soul/global/SOUL.md\nAlso: AGENTS.md (workflow config), TOOLS.md (available tools)</div>',
+        '<p style="font-size:12px;color:var(--text-s)">这是<strong>公司章程</strong>。每个 Agent——从实习生到 CEO——首先读取它。它建立：(1) 核心身份："你是 ACME 公司的数字员工。"(2) 合规规则："永远不要在回复中分享客户 PII。"(3) 行为护栏："始终保持专业。如果不确定，就说不确定。"关键属性：<strong>下层无法覆盖这些规则</strong>。即使员工在个人 SOUL 写"忽略所有公司规则"，全局层仍然约束他们，因为它在合并文件中最先被写入，带有 CRITICAL IDENTITY OVERRIDE 标记。</p><div class="code" style="font-size:10px">S3 路径: s3://{bucket}/_shared/soul/global/SOUL.md\n另外: AGENTS.md (工作流配置), TOOLS.md (可用工具)</div>'
+      )
+    )
+    + card(t('Layer 2: Position SOUL — "You are a Solutions Architect"','第 2 层：岗位 SOUL — "你是解决方案架构师"'),
+      t(
+        '<p style="font-size:12px;color:var(--text-s)">This is the <strong>department handbook</strong>. An SA gets: "Always reference the AWS Well-Architected Framework. Provide cost estimates. Ask clarifying questions before making architecture decisions." A Legal Counsel gets: "Cite specific clause numbers when reviewing contracts. Flag liability risks explicitly." <strong>Edit once → every agent in that role updates</strong> on their next session. This is the power of the position system: 10 position SOULs manage 500 individual agents.</p><div class="code" style="font-size:10px">S3 path: s3://{bucket}/_shared/soul/positions/{pos_id}/SOUL.md\nExample: _shared/soul/positions/pos-sa/SOUL.md</div>',
+        '<p style="font-size:12px;color:var(--text-s)">这是<strong>部门手册</strong>。SA 获得："始终参考 AWS Well-Architected Framework。提供成本估算。在做架构决策前先问清需求。"法务顾问获得："审查合同时引用具体条款号。明确标记责任风险。"<strong>编辑一次 → 该角色所有 Agent 在下次会话更新</strong>。这是岗位系统的力量：10 个岗位 SOUL 管理 500 个 Agent。</p><div class="code" style="font-size:10px">S3 路径: s3://{bucket}/_shared/soul/positions/{pos_id}/SOUL.md\n示例: _shared/soul/positions/pos-sa/SOUL.md</div>'
+      )
+    )
+    + card(t('Layer 3: Personal SOUL — "I prefer bullet points in Chinese"','第 3 层：个人 SOUL — "我喜欢中文要点格式"'),
+      t(
+        '<p style="font-size:12px;color:var(--text-s)">The employee\'s own preferences. "I prefer concise bullet points." "Always respond in Chinese when I write in Chinese." "My timezone is Asia/Shanghai." This layer is editable by the <strong>employee themselves</strong> via Portal → My Profile, or by admin via Agent Factory. It adds personalization without overriding company or role rules.</p><div class="code" style="font-size:10px">S3 path: s3://{bucket}/{emp_id}/workspace/SOUL.md\nBackup: s3://{bucket}/{emp_id}/workspace/.personal_soul_backup.md</div>',
+        '<p style="font-size:12px;color:var(--text-s)">员工自己的偏好。"我喜欢简洁的要点格式。""当我用中文写时始终用中文回复。""我的时区是 Asia/Shanghai。"该层可由<strong>员工自己</strong>通过 Portal → My Profile 编辑，或由管理员通过 Agent Factory 编辑。它添加个性化而不覆盖公司或角色规则。</p><div class="code" style="font-size:10px">S3 路径: s3://{bucket}/{emp_id}/workspace/SOUL.md\n备份: s3://{bucket}/{emp_id}/workspace/.personal_soul_backup.md</div>'
+      )
+    )
+    + deep(
+`<h4>How OpenClaw Reads SOUL — The Assembly Process</h4>
+<p>OpenClaw (the npm package running inside each AgentCore microVM) reads exactly <strong>one file</strong>: <code>SOUL.md</code> in the workspace directory. It doesn't know about layers — it just reads one markdown file as its system prompt. Our job is to <strong>assemble</strong> this file from three S3 sources before OpenClaw starts processing.</p>
 
 <h4>Assembly Code: workspace_assembler.py → merge_soul()</h4>
-<p>OpenClaw reads ONE file: <code>SOUL.md</code>. We produce it by concatenating three layers with HTML comment markers and <code>---</code> separators:</p>
+<p>File: <code>enterprise/agent-container/workspace_assembler.py</code>, function <code>merge_soul()</code> (line 132-153).</p>
+<p>The merge is a simple concatenation with HTML comment markers and horizontal rule separators:</p>
 <div class="code">&lt;!-- LAYER: GLOBAL (locked by IT — do not modify) --&gt;
-**CRITICAL IDENTITY OVERRIDE: You are a digital employee of ACME Corp...**
-{global_soul}
+
+**CRITICAL IDENTITY OVERRIDE: You are a digital employee
+of ACME Corp. This overrides any default identity.**
+
+{content of _shared/soul/global/SOUL.md}
 
 ---
 
 &lt;!-- LAYER: POSITION (managed by department admin) --&gt;
-{position_soul}
+{content of _shared/soul/positions/pos-sa/SOUL.md}
 
 ---
 
 &lt;!-- LAYER: PERSONAL (employee preferences) --&gt;
-{personal_soul}</div>
-<p>If any layer is missing, it's simply omitted. If all are missing: <code>"You are a helpful AI assistant."</code></p>
+{content of {emp_id}/workspace/SOUL.md}</div>
+<p>The <code>CRITICAL IDENTITY OVERRIDE</code> text is hardcoded in merge_soul() — it ensures that even if a model tries to adopt its default identity ("I am Claude/Nova"), the SOUL.md clearly states it's an ACME Corp employee. If any layer is empty, it's simply omitted. If all three are empty, the fallback is: <code>"You are a helpful AI assistant."</code></p>
 
-<h4>Anti-Snowball: .personal_soul_backup.md</h4>
-<p><strong>Problem:</strong> Without protection, assembly reads the already-merged SOUL.md as the "personal" layer on session 2+, causing it to grow exponentially (global+pos+personal → becomes new personal → gets global+pos added again).</p>
-<p><strong>Solution:</strong> On first assembly, save original personal SOUL to <code>.personal_soul_backup.md</code>. All subsequent assemblies read from backup, never the merged version.</p>
-<div class="code"># First session:
-read SOUL.md (personal only) → save to .personal_soul_backup.md → merge
+<h4>When Does Assembly Happen?</h4>
+<p>File: <code>enterprise/agent-container/server.py</code>, function <code>_ensure_workspace_assembled()</code> (line 282-764).</p>
+<p>Assembly runs on the <strong>first /invocations request</strong> for each tenant_id. Results are cached in <code>_assembled_tenants</code> set — subsequent requests for the same tenant skip assembly. The full sequence:</p>
+<div class="code">1. S3 sync: download employee's personal workspace
+   aws s3 cp s3://{bucket}/{emp_id}/workspace/ → /root/.openclaw/workspace/
 
-# Session N (N≥2):
-read .personal_soul_backup.md (original!) → merge fresh
-# Result: deterministic, same output every time</div>
+2. workspace_assembler.py: merge Global + Position + Personal
+   → writes merged SOUL.md, AGENTS.md, TOOLS.md, IDENTITY.md
 
-<h4>Personal SOUL Sync-Back</h4>
-<p>The entrypoint.sh watchdog syncs workspace back to S3 every 60 seconds, but <strong>intentionally excludes</strong>:</p>
-<div class="code">--exclude "SOUL.md"                  # Don't overwrite assembled version with S3 personal
---exclude ".personal_soul_backup.md" # Protect the anti-snowball backup
---exclude "AGENTS.md"                # Assembly-only file
---exclude "IDENTITY.md"              # Generated at assembly time
---exclude "knowledge/*"              # Position KB, not personal</div>
-<p><strong>What IS synced back:</strong> USER.md, MEMORY.md, HEARTBEAT.md, memory/*.md (conversation history)</p>
+3. Plan A injection: prepend tool permission constraints
+   "&lt;!-- PLAN A --&gt; Allowed: web_search, file. MUST NOT: shell, browser..."
 
-<h4>When Admin Changes SOUL</h4>
+4. Dynamic config: read CONFIG#model from DynamoDB
+   → rewrite openclaw.json with per-position model override
+
+5. KB injection: download knowledge base files from S3
+   → append KB paths + org directory to SOUL.md
+
+6. Language preference: append "Always respond in Chinese..."
+
+7. Write soulHash to DynamoDB SESSION# (for admin monitoring)</div>
+
+<h4>The Anti-Snowball Problem</h4>
+<p>Without protection, a critical bug occurs: on Session 1, SOUL.md contains only the personal layer (100 chars). merge_soul() creates a merged version (1000 chars). On Session 2, merge_soul() reads the now-merged SOUL.md as "personal" input → merges again → SOUL.md grows to 2000 chars. By Session 10, SOUL.md is enormous and contains 10 copies of the Global layer.</p>
+<p><strong>Solution: <code>.personal_soul_backup.md</code></strong></p>
+<div class="code">Session 1:
+  Read SOUL.md (personal only, 100 chars)
+  Save copy → .personal_soul_backup.md
+  merge_soul(global, position, personal) → write merged SOUL.md (1000 chars)
+
+Session 2+:
+  Read .personal_soul_backup.md (original 100 chars, NOT the merged 1000)
+  merge_soul(global, position, backup) → same 1000 chars (deterministic)</div>
+<p>This file is <strong>excluded from S3 sync-back</strong> (entrypoint.sh watchdog) to prevent it from being overwritten.</p>
+
+<h4>What Gets Synced Back to S3 (and What Doesn't)</h4>
+<p>The entrypoint.sh watchdog runs every 60 seconds, syncing the workspace back to S3. But it deliberately <strong>excludes</strong> assembly-generated files:</p>
 <table class="tbl">
-<tr><th>Action</th><th>Storage</th><th>Propagation</th><th>Latency</th></tr>
-<tr><td>Edit Global SOUL</td><td>S3 _shared/soul/global/</td><td>bump_config_version() → DDB CONFIG#global-version → agents poll every 5 min → cache evict → re-assemble</td><td>≤5 min</td></tr>
-<tr><td>Edit Position SOUL</td><td>S3 _shared/soul/positions/{pos}/</td><td>Same config version bump mechanism</td><td>≤5 min</td></tr>
-<tr><td>Edit Personal SOUL (Portal)</td><td>S3 {emp_id}/workspace/SOUL.md direct write</td><td>Session stop → next session re-assembles from S3</td><td>Immediate (next session)</td></tr>
+<tr><th>File</th><th>Synced?</th><th>Why</th></tr>
+<tr><td>SOUL.md</td><td>❌ Excluded</td><td>Assembly output — would overwrite personal layer in S3</td></tr>
+<tr><td>.personal_soul_backup.md</td><td>❌ Excluded</td><td>Anti-snowball protection — must not be modified</td></tr>
+<tr><td>AGENTS.md, TOOLS.md, IDENTITY.md</td><td>❌ Excluded</td><td>Generated at assembly time, not personal data</td></tr>
+<tr><td>knowledge/*</td><td>❌ Excluded</td><td>Position-level KB files, downloaded at assembly</td></tr>
+<tr><td>USER.md</td><td>✅ Synced</td><td>Employee edits their profile — must persist</td></tr>
+<tr><td>MEMORY.md</td><td>✅ Synced</td><td>Conversation history — must persist</td></tr>
+<tr><td>HEARTBEAT.md</td><td>✅ Synced</td><td>Reminders and scheduled tasks</td></tr>
+<tr><td>memory/*.md</td><td>✅ Synced</td><td>Daily conversation checkpoints</td></tr>
+</table>
+
+<h4>How Admin Changes Propagate to Running Agents</h4>
+<p>When an admin edits a SOUL layer, how does a running agent pick it up?</p>
+<table class="tbl">
+<tr><th>Change</th><th>Mechanism</th><th>Latency</th></tr>
+<tr><td>Global SOUL edit</td><td>Admin saves → S3 write + <code>bump_config_version()</code> writes new CONFIG#global-version to DynamoDB → agents poll every 5 min (<code>_CONFIG_VERSION_CHECK_INTERVAL=300</code>) → on version change: <code>_assembled_tenants.clear()</code> → next request triggers fresh assembly</td><td>Up to 5 min</td></tr>
+<tr><td>Position SOUL edit</td><td>Same mechanism (config version bump)</td><td>Up to 5 min</td></tr>
+<tr><td>Personal SOUL edit (Portal)</td><td>Portal API writes directly to S3 → calls <code>stop_employee_session()</code> → forces session termination → next request creates new microVM with fresh assembly</td><td>Immediate (next message)</td></tr>
 </table>
 
 <h4>DynamoDB Records Involved</h4>
 <table class="tbl">
-<tr><th>Record</th><th>Key</th><th>Purpose</th></tr>
-<tr><td>Config Version</td><td>SK=CONFIG#global-version</td><td>Cache invalidation trigger for running agents</td></tr>
-<tr><td>Employee</td><td>SK=EMP#{emp_id}</td><td>positionId → determines which position SOUL to load</td></tr>
-<tr><td>IM Mapping</td><td>SK=MAPPING#{ch}__{uid}</td><td>Feishu OU ID → emp_id resolution for SOUL lookup</td></tr>
-<tr><td>KB Assignments</td><td>SK=CONFIG#kb-assignments</td><td>Which KBs to inject at end of SOUL.md</td></tr>
-<tr><td>Session</td><td>SK=SESSION#{tenant_id}</td><td>Stores soulHash for admin monitoring</td></tr>
+<tr><th>Record</th><th>Key</th><th>Role in SOUL Assembly</th></tr>
+<tr><td>Config Version</td><td>SK=CONFIG#global-version</td><td>Cache invalidation trigger. Polled every 5 min by running agents.</td></tr>
+<tr><td>Employee</td><td>SK=EMP#{emp_id}</td><td>positionId field → determines which position SOUL to load</td></tr>
+<tr><td>IM Mapping</td><td>SK=MAPPING#{ch}__{uid}</td><td>Resolves Feishu OU ID / Telegram ID → emp_id for SOUL lookup</td></tr>
+<tr><td>KB Assignments</td><td>SK=CONFIG#kb-assignments</td><td>Determines which knowledge bases to inject at end of SOUL.md</td></tr>
+<tr><td>Model Config</td><td>SK=CONFIG#model</td><td>Position/employee model overrides applied after assembly</td></tr>
+<tr><td>Session</td><td>SK=SESSION#{tenant_id}</td><td>Stores soulHash (SHA256 of assembled SOUL.md) for admin monitoring</td></tr>
 </table>
 
-<h4>Post-Assembly Injections (server.py)</h4>
-<p>After merge_soul(), server.py appends additional blocks to SOUL.md:</p>
-<div class="code">1. Plan A (permissions):  "&lt;!-- PLAN A --&gt; Allowed tools: web_search, file. MUST NOT use: shell..."
-2. Knowledge Bases:     "&lt;!-- KNOWLEDGE BASES --&gt; You have access to: kb-policies, kb-arch..."
-3. Org Directory:       "&lt;!-- COMPANY DIRECTORY --&gt; (inline employee list)"
-4. Language preference:  "&lt;!-- LANGUAGE --&gt; Always respond in Chinese..."</div>
+<h4>Post-Assembly Injections by server.py</h4>
+<p>After merge_soul() produces the base SOUL.md, server.py appends several more blocks. The final SOUL.md a model actually reads looks like:</p>
+<div class="code">&lt;!-- PLAN A: PERMISSION ENFORCEMENT --&gt;
+Allowed tools: web_search, file. MUST NOT use: shell, browser, code_execution...
 
-<h4>⚠️ Known Design Gaps</h4>
-<ul style="color:var(--warn);font-size:12px">
-<li>Position-specific changes evict ALL agent caches (not just the affected position). Could add POS#{pos_id}:version for targeted refresh.</li>
-<li>If .personal_soul_backup.md is accidentally deleted, snowball cycle restarts.</li>
-<li>USER.md edits are separate from SOUL merge — USER.md is read by OpenClaw as context, not merged into SOUL.md.</li>
-</ul>`,
-`
-<h4>S3 存储结构</h4>
-<div class="code">s3://{bucket}/
-├── _shared/soul/global/SOUL.md          ← 第 1 层：全局（IT 锁定）
-├── _shared/soul/positions/{pos_id}/SOUL.md  ← 第 2 层：岗位
-└── {emp_id}/workspace/SOUL.md           ← 第 3 层：个人
-    └── .personal_soul_backup.md         ← 防雪球备份</div>
+---
 
-<h4>组装代码：workspace_assembler.py → merge_soul()</h4>
-<p>OpenClaw 只读取一个文件：<code>SOUL.md</code>。我们通过 HTML 注释标记和 <code>---</code> 分隔符拼接三层生成：</p>
-<div class="code">&lt;!-- LAYER: GLOBAL --&gt;
-**关键身份覆盖：你是 ACME 公司的数字员工...**
-{全局 SOUL}
+&lt;!-- LAYER: GLOBAL --&gt;
+You are a digital employee of ACME Corp...
 
 ---
 
 &lt;!-- LAYER: POSITION --&gt;
-{岗位 SOUL}
+You are a Solutions Architect...
 
 ---
 
 &lt;!-- LAYER: PERSONAL --&gt;
-{个人 SOUL}</div>
+I prefer bullet points...
 
-<h4>防雪球机制：.personal_soul_backup.md</h4>
-<p><strong>问题：</strong>不保护的话，第 2 次组装会读取已合并的 SOUL.md 作为"个人"层，导致指数增长。</p>
-<p><strong>方案：</strong>首次组装时保存原始个人 SOUL 到 <code>.personal_soul_backup.md</code>。后续组装读取备份，不读合并版。</p>
+&lt;!-- KNOWLEDGE BASES --&gt;
+You have access to:
+- Company Policies: /workspace/knowledge/kb-policies/
+- Architecture Standards: /workspace/knowledge/kb-arch/
 
-<h4>个人 SOUL 同步回写</h4>
-<p>watchdog 每 60 秒同步，但<strong>刻意排除</strong> SOUL.md（防止覆盖组装版本）。回写的是：USER.md、MEMORY.md、HEARTBEAT.md、memory/*.md。</p>
+&lt;!-- COMPANY DIRECTORY (inline) --&gt;
+Name | Position | Department | Email
+JiaDe Wang | Solutions Architect | Engineering | ...
+...
 
-<h4>管理员修改 SOUL 的传播</h4>
+&lt;!-- LANGUAGE PREFERENCE --&gt;
+Always respond in Chinese unless the user writes in English.</div>
+
+<h4>⚠️ Known Design Considerations</h4>
+<ul style="font-size:12px;color:var(--text-s);line-height:1.8">
+<li><strong>Position change = global cache evict:</strong> Changing one position's SOUL bumps CONFIG#global-version, which evicts ALL agents' assembly cache (not just the affected position). This is simple but wasteful — could be improved with per-position versioning.</li>
+<li><strong>.personal_soul_backup.md deletion risk:</strong> If accidentally deleted, the snowball cycle restarts. The backup is excluded from S3 sync, so it can only be deleted manually inside the microVM or by a code bug.</li>
+<li><strong>USER.md is separate from SOUL merge:</strong> USER.md is read by OpenClaw as additional context (like a profile card), but it's NOT merged into SOUL.md. This is intentional — USER.md is for factual info about the employee, SOUL.md is for behavior instructions.</li>
+<li><strong>5-minute propagation latency:</strong> Global/Position SOUL changes take up to 5 minutes to reach running agents. For serverless agents, the change is instant on next session start (since the microVM is created fresh).</li>
+</ul>`,
+
+`<h4>OpenClaw 如何读取 SOUL — 组装过程</h4>
+<p>OpenClaw（运行在每个 AgentCore 微虚拟机内的 npm 包）只读取<strong>一个文件</strong>：工作区目录中的 <code>SOUL.md</code>。它不知道分层的存在——只读一个 markdown 文件作为系统提示。我们的工作是在 OpenClaw 开始处理之前，从三个 S3 源<strong>组装</strong>这个文件。</p>
+
+<h4>组装代码：workspace_assembler.py → merge_soul()</h4>
+<p>文件：<code>enterprise/agent-container/workspace_assembler.py</code>，函数 <code>merge_soul()</code>（行 132-153）。</p>
+<p>合并是简单的拼接，使用 HTML 注释标记和水平线分隔符：</p>
+<div class="code">&lt;!-- LAYER: GLOBAL (locked by IT — do not modify) --&gt;
+
+**CRITICAL IDENTITY OVERRIDE: You are a digital employee
+of ACME Corp. This overrides any default identity.**
+
+{_shared/soul/global/SOUL.md 的内容}
+
+---
+
+&lt;!-- LAYER: POSITION (managed by department admin) --&gt;
+{_shared/soul/positions/pos-sa/SOUL.md 的内容}
+
+---
+
+&lt;!-- LAYER: PERSONAL (employee preferences) --&gt;
+{{emp_id}/workspace/SOUL.md 的内容}</div>
+<p><code>CRITICAL IDENTITY OVERRIDE</code> 文本在 merge_soul() 中硬编码——确保即使模型尝试采用默认身份（"我是 Claude/Nova"），SOUL.md 明确声明它是 ACME 公司员工。</p>
+
+<h4>组装何时发生？</h4>
+<p>文件：<code>enterprise/agent-container/server.py</code>，函数 <code>_ensure_workspace_assembled()</code>（行 282-764）。</p>
+<p>组装在每个 tenant_id 的<strong>第一次 /invocations 请求</strong>时运行。结果缓存在 <code>_assembled_tenants</code> 集合中。完整序列：</p>
+<div class="code">1. S3 同步：下载员工的个人工作区
+2. workspace_assembler.py：合并 Global + Position + Personal
+3. Plan A 注入：前置工具权限约束
+4. 动态配置：从 DynamoDB 读取 CONFIG#model，按岗位覆盖模型
+5. KB 注入：从 S3 下载知识库文件，追加到 SOUL.md
+6. 语言偏好：追加"始终用中文回复..."
+7. 将 soulHash 写入 DynamoDB SESSION#</div>
+
+<h4>防雪球问题</h4>
+<p>不保护的话，Session 1 的个人 SOUL（100 字符）被合并为 1000 字符。Session 2 读取已合并的 1000 字符作为"个人"输入再合并→ 2000 字符。到 Session 10，SOUL.md 巨大无比。</p>
+<p><strong>解决方案：<code>.personal_soul_backup.md</code></strong> — 首次组装时保存原始个人 SOUL 的副本。后续组装读取备份（非合并版），确保确定性输出。该文件从 S3 同步中排除。</p>
+
+<h4>同步回写规则</h4>
 <table class="tbl">
-<tr><th>操作</th><th>存储</th><th>传播机制</th><th>延迟</th></tr>
-<tr><td>全局 SOUL</td><td>S3</td><td>config version bump → 5 分钟轮询 → 缓存清除</td><td>≤5 分钟</td></tr>
-<tr><td>岗位 SOUL</td><td>S3</td><td>同上</td><td>≤5 分钟</td></tr>
-<tr><td>个人 SOUL</td><td>S3 直写</td><td>会话停止 → 下次重新组装</td><td>即时</td></tr>
+<tr><th>文件</th><th>回写？</th><th>原因</th></tr>
+<tr><td>SOUL.md</td><td>❌ 排除</td><td>组装输出——会覆盖 S3 中的个人层</td></tr>
+<tr><td>.personal_soul_backup.md</td><td>❌ 排除</td><td>防雪球保护——不可修改</td></tr>
+<tr><td>USER.md</td><td>✅ 回写</td><td>员工编辑的档案——必须持久化</td></tr>
+<tr><td>MEMORY.md</td><td>✅ 回写</td><td>对话历史——必须持久化</td></tr>
+<tr><td>memory/*.md</td><td>✅ 回写</td><td>每日对话检查点</td></tr>
 </table>
 
-<h4>⚠️ 已知设计缺口</h4>
-<ul style="color:var(--warn);font-size:12px">
-<li>岗位变更会清除所有 Agent 缓存（不仅仅是受影响的岗位）</li>
-<li>如果 .personal_soul_backup.md 被意外删除，雪球循环重启</li>
-<li>USER.md 编辑与 SOUL 合并分离 — USER.md 作为上下文被 OpenClaw 读取，不合并到 SOUL.md</li>
-</ul>
-`); }},
+<h4>管理员变更如何传播</h4>
+<table class="tbl">
+<tr><th>变更</th><th>机制</th><th>延迟</th></tr>
+<tr><td>全局/岗位 SOUL</td><td>保存 → S3 + bump_config_version() → DynamoDB CONFIG#global-version → 5 分钟轮询 → 缓存清除 → 重新组装</td><td>≤5 分钟</td></tr>
+<tr><td>个人 SOUL（Portal）</td><td>直写 S3 → 停止会话 → 下次创建新微虚拟机重新组装</td><td>即时</td></tr>
+</table>
+
+<h4>最终 SOUL.md 的完整结构</h4>
+<div class="code">&lt;!-- PLAN A: PERMISSION ENFORCEMENT --&gt;
+Allowed tools: web_search, file. MUST NOT: shell, browser...
+---
+&lt;!-- LAYER: GLOBAL --&gt; 你是 ACME 公司数字员工...
+---
+&lt;!-- LAYER: POSITION --&gt; 你是解决方案架构师...
+---
+&lt;!-- LAYER: PERSONAL --&gt; 我喜欢要点格式...
+&lt;!-- KNOWLEDGE BASES --&gt; 可用知识库路径...
+&lt;!-- COMPANY DIRECTORY --&gt; 内联员工目录...
+&lt;!-- LANGUAGE PREFERENCE --&gt; 始终用中文回复...</div>
+
+<h4>⚠️ 设计注意事项</h4>
+<ul style="font-size:12px;color:var(--text-s);line-height:1.8">
+<li><strong>岗位变更 = 全局缓存清除：</strong>修改一个岗位的 SOUL 会清除所有 Agent 的缓存（非仅受影响岗位）。</li>
+<li><strong>.personal_soul_backup.md 删除风险：</strong>如被删除，雪球循环重启。</li>
+<li><strong>USER.md 与 SOUL 分离：</strong>USER.md 是员工档案信息，不合并到 SOUL.md。SOUL 是行为指令。</li>
+<li><strong>5 分钟传播延迟：</strong>全局/岗位变更最多 5 分钟到达运行中的 Agent。Serverless Agent 下次会话立即生效。</li>
+</ul>`
+    ); }},
 
 agents: { en:{title:'Agent Factory',sub:'Fleet management — status, models, quality, deploy mode.'}, zh:{title:'Agent 工厂',sub:'车队管理 — 状态、模型、质量、部署模式。'}, body(){ return intent('Like a <strong>car dealership inventory</strong>: every agent\'s status, model, quality score, deployment mode. Set Bedrock models per position — <strong>executives use Claude Opus, interns use Nova Lite</strong>.','像<strong>汽车库存系统</strong>：每个 Agent 的状态、模型、质量分、部署模式。按岗位设置模型 — <strong>高管用 Claude Opus，实习生用 Nova Lite</strong>。') + note('info','📍',t('<strong>Navigate:</strong> Agent Factory. 20 agents with sortable columns. Click → SOUL editor, session history, skill list.','<strong>导航：</strong>Agent Factory。20 个 Agent，可排序。点击 → SOUL 编辑器、会话历史、技能列表。'))
     + deep(`
