@@ -7,6 +7,7 @@ Extracted from main.py lines 699-1172.
 
 import os
 import json
+import re
 import threading
 import subprocess
 from datetime import datetime, timezone
