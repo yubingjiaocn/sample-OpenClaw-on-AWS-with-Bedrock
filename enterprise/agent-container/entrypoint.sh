@@ -162,7 +162,54 @@ with open(config_path, 'w') as f:
 fi
 
 # =============================================================================
-# Step 0.6: Start OpenClaw Gateway — native session management + memory
+# Step 0.6.1: Auto-connect IM channels from DynamoDB credentials (Fargate per-employee)
+# If EMP#.imCredentials exists in DynamoDB, run `openclaw channels add` for each.
+# EFS persists openclaw.json so this only matters on FIRST boot or after credential change.
+# =============================================================================
+if [ "$EFS_MODE" = "true" ] && [ "$BASE_TENANT_ID" != "unknown" ]; then
+    python3 -c "
+import json, os, subprocess, sys
+try:
+    import boto3
+    ddb_region = os.environ.get('DYNAMODB_REGION', os.environ.get('AWS_REGION', 'us-east-1'))
+    ddb_table = os.environ.get('DYNAMODB_TABLE', os.environ.get('STACK_NAME', 'openclaw'))
+    emp_id = '$BASE_TENANT_ID'
+    ddb = boto3.resource('dynamodb', region_name=ddb_region)
+    table = ddb.Table(ddb_table)
+    resp = table.get_item(Key={'PK': 'ORG#acme', 'SK': f'EMP#{emp_id}'})
+    creds = resp.get('Item', {}).get('imCredentials', {})
+    if not creds:
+        print('[entrypoint] No IM credentials in DynamoDB for ' + emp_id)
+        sys.exit(0)
+    openclaw = '/usr/local/bin/openclaw'
+    env = os.environ.copy()
+    env['HOME'] = os.environ.get('HOME', '/root')
+    env['PATH'] = '/usr/local/bin:/usr/bin:/bin:' + env.get('PATH', '')
+    for channel, data in creds.items():
+        if not data or not isinstance(data, dict):
+            continue
+        cmd = [openclaw, 'channels', 'add', '--channel', channel]
+        for k, v in data.items():
+            if k in ('connectedAt',):
+                continue
+            flag = '--' + k.replace('_', '-')
+            if k == 'appId': flag = '--app-id'
+            elif k == 'appSecret': flag = '--app-secret'
+            elif k == 'botToken': flag = '--bot-token'
+            elif k == 'appToken': flag = '--app-token'
+            cmd.extend([flag, str(v)])
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15, env=env)
+        if r.returncode == 0:
+            print(f'[entrypoint] IM auto-connect: {channel} OK')
+        else:
+            print(f'[entrypoint] IM auto-connect: {channel} FAILED ({r.stderr[:100]})')
+except Exception as e:
+    print(f'[entrypoint] IM auto-connect failed (non-fatal): {e}')
+" 2>&1
+fi
+
+# =============================================================================
+# Step 0.7: Start OpenClaw Gateway — native session management + memory
 # Gateway must run BEFORE server.py so OpenClaw agent CLI can connect to it.
 # Without Gateway, OpenClaw falls back to embedded mode (no memory compaction).
 # With bot tokens injected above, Gateway auto-connects to IM channels.

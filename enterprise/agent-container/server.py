@@ -1074,6 +1074,77 @@ class AgentCoreHandler(BaseHTTPRequestHandler):
                 self._respond(200, {"refreshed": True, "empId": emp_id, "evicted": evicted})
             return
 
+        # ── Channel management (IM connections) ───────────────────────────
+        if self.path == "/admin/channels/add":
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            try:
+                payload = json.loads(body) if body else {}
+            except json.JSONDecodeError:
+                self._respond(400, {"error": "invalid json"})
+                return
+            channel = payload.get("channel", "")
+            if not channel:
+                self._respond(400, {"error": "channel required (telegram, feishu, discord, slack)"})
+                return
+            # Build openclaw channels add command
+            cmd = [OPENCLAW_BIN, "channels", "add", "--channel", channel]
+            for key in ("token", "bot-token", "app-token", "app-id", "app-secret"):
+                val = payload.get(key.replace("-", "_"), payload.get(key, ""))
+                if val:
+                    cmd.extend([f"--{key}", val])
+            try:
+                env = os.environ.copy()
+                env["HOME"] = os.environ.get("HOME", "/root")
+                env["PATH"] = "/usr/local/bin:/usr/bin:/bin:" + env.get("PATH", "")
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
+                output = result.stdout + result.stderr
+                success = result.returncode == 0
+                logger.info("Channel add %s: exit=%d output=%s", channel, result.returncode, output[:200])
+                self._respond(200 if success else 500, {
+                    "success": success, "channel": channel,
+                    "output": output[:500],
+                })
+            except Exception as e:
+                self._respond(500, {"success": False, "error": str(e)})
+            return
+
+        if self.path == "/admin/channels/remove":
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            try:
+                payload = json.loads(body) if body else {}
+            except json.JSONDecodeError:
+                self._respond(400, {"error": "invalid json"})
+                return
+            channel = payload.get("channel", "")
+            if not channel:
+                self._respond(400, {"error": "channel required"})
+                return
+            try:
+                env = os.environ.copy()
+                env["HOME"] = os.environ.get("HOME", "/root")
+                env["PATH"] = "/usr/local/bin:/usr/bin:/bin:" + env.get("PATH", "")
+                result = subprocess.run(
+                    [OPENCLAW_BIN, "channels", "remove", "--channel", channel],
+                    capture_output=True, text=True, timeout=15, env=env)
+                logger.info("Channel remove %s: exit=%d", channel, result.returncode)
+                self._respond(200, {"success": result.returncode == 0, "channel": channel})
+            except Exception as e:
+                self._respond(500, {"success": False, "error": str(e)})
+            return
+
+        if self.path == "/admin/channels/list":
+            try:
+                env = os.environ.copy()
+                env["HOME"] = os.environ.get("HOME", "/root")
+                env["PATH"] = "/usr/local/bin:/usr/bin:/bin:" + env.get("PATH", "")
+                result = subprocess.run(
+                    [OPENCLAW_BIN, "channels", "list"],
+                    capture_output=True, text=True, timeout=15, env=env)
+                self._respond(200, {"output": result.stdout + result.stderr})
+            except Exception as e:
+                self._respond(500, {"error": str(e)})
+            return
+
         if self.path != "/invocations":
             self._respond(404, {"error": "not found"})
             return
