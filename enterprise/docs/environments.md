@@ -11,6 +11,7 @@
 | **openclaw-jiade2** | 651770013524 | jiade2 | ap-northeast-1 | i-0344c501e6bdd0649 | c7g.large | https://openclaw.awspsa.com | wjiad@amazon |
 
 - CloudFront: `E21RJOMTNCOF1N` (default account 263168716248) → origin: Tokyo ALB `openclaw-tokyo-alb-*.ap-northeast-1.elb.amazonaws.com`
+- **VPC Origin PENDING:** `vo_JGVJb3n1UNEBsWbDg1u3Zo` (jiade2 account, Deployed, awaiting CF update)
 - OriginReadTimeout: 60s (updated 2026-04-14, was 30s)
 - S3 Bucket: `openclaw-tenants-651770013524`
 - DynamoDB: `openclaw-jiade2` (ap-northeast-1)
@@ -40,7 +41,10 @@
 |-------|---------|---------|--------|----------|------|-----|----------|
 | **openclaw-e2e-test** | 263168716248 | default | us-east-2 | i-054cb53703d2ba33c | c7g.large | https://dev-openclaw.awspsa.com | e2e-test-2026 |
 
-- CloudFront: `E1KNUZKAIOJVUA` (default account) → origin: EC2:8099 `ec2-3-128-78-89.us-east-2.compute.amazonaws.com`
+- CloudFront: `E1KNUZKAIOJVUA` (default account) → **VPC Origin** `vo_7fIxx0UYU1TFqzROnc4HQq` → EC2 private IP 10.0.1.29:8099
+- VPC Origin: Deployed, private network access (no public IP needed)
+- Subnet auto-assign public IP: **OFF** (next reboot removes public IP)
+- SG: `sg-0413dc66c2efd5e0a` — inbound 8099 from VPC CIDR 10.0.0.0/16 + CloudFront ENI SG `sg-07ff7b0dfc9c2d964`
 - OriginReadTimeout: 60s
 - S3 Bucket: `openclaw-e2e-test-263168716248`
 - DynamoDB: `openclaw-e2e-test` (us-east-2)

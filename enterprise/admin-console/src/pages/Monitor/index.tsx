@@ -46,6 +46,8 @@ export default function Monitor() {
   const actionItems = actionItemsData?.items || [];
   const agentActivity = agentActivityData?.agents || [];
   const activeAgents = agentActivity.filter((a: any) => a.status === 'active').length || AGENTS.filter(a => a.status === 'active').length;
+  const alwaysOnAgents = AGENTS.filter(a => a.deployMode === 'always-on-ecs');
+  const agentDeployMode = (agentId: string) => AGENTS.find(a => a.id === agentId)?.deployMode;
   const totalTurns = sessions.reduce((s, sess) => s + sess.turns, 0);
   const avgQuality = AGENTS.filter(a => a.qualityScore).length > 0
     ? AGENTS.filter(a => a.qualityScore).reduce((s, a) => s + (a.qualityScore || 0), 0) / AGENTS.filter(a => a.qualityScore).length
@@ -101,13 +103,14 @@ export default function Monitor() {
       </div>
 
       {/* System Health Bar */}
-      <div className="grid grid-cols-3 gap-4 mb-6">
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 mb-6">
         {(() => {
           const sysStatus = systemStatusData || {};
           const services = [
             { label: 'Admin Console', status: (sysStatus as any)?.['admin-console'] || 'healthy', detail: 'Port 8099' },
             { label: 'Tenant Router', status: (sysStatus as any)?.['tenant-router'] || 'healthy', detail: 'Agent orchestration' },
             { label: 'Bedrock API', status: (sysStatus as any)?.bedrock || 'connected', detail: `${sys.bedrockLatencyMs || '—'}ms latency` },
+            { label: 'Fargate Agents', status: alwaysOnAgents.length > 0 ? 'healthy' : 'idle', detail: `${alwaysOnAgents.length} always-on` },
           ];
           return services.map(svc => (
             <div key={svc.label} className="rounded-lg border border-dark-border bg-dark-card px-4 py-3 flex items-center justify-between">
@@ -176,6 +179,12 @@ export default function Monitor() {
                   { key: 'arrow', label: '', render: () => <span className="text-text-muted">↔</span>, width: '40px' },
                   { key: 'agent', label: 'Agent', render: (s: typeof sessions[0]) => <button onClick={(e) => { e.stopPropagation(); navigate(`/agents/${s.agentId}`); }} className="font-medium text-primary-light hover:underline">{s.agentName}</button> },
                   { key: 'channel', label: 'Channel', render: (s: typeof sessions[0]) => <Badge color="info">{CHANNEL_LABELS[s.channel as ChannelType]}</Badge> },
+                  { key: 'mode', label: 'Mode', render: (s: typeof sessions[0]) => {
+                    const mode = agentDeployMode(s.agentId);
+                    return mode === 'always-on-ecs'
+                      ? <Badge color="success"><Zap size={10} className="inline mr-0.5" />Fargate</Badge>
+                      : <Badge color="default">Serverless</Badge>;
+                  }},
                   { key: 'duration', label: 'Duration', render: (s: typeof sessions[0]) => <span className="text-text-muted">{elapsed(s.startedAt)}</span> },
                   { key: 'turns', label: 'Turns', render: (s: typeof sessions[0]) => s.turns },
                   { key: 'lastMsg', label: 'Latest Message', render: (s: typeof sessions[0]) => <span className="text-xs text-text-muted truncate block max-w-[200px]">{s.lastMessage}</span> },
@@ -264,6 +273,7 @@ export default function Monitor() {
                       <p className="text-sm font-medium text-text-primary">{agent.agentName || agent.name}</p>
                       <p className="text-xs text-text-muted">{agent.employeeName} · {agent.positionName}</p>
                     </div>
+                    {(() => { const m = agentDeployMode(agent.agentId || agent.id); return m === 'always-on-ecs' ? <Badge color="success"><Zap size={10} className="inline mr-0.5" />Fargate</Badge> : null; })()}
                     <Badge color={agent.status === 'active' ? 'success' : agent.status === 'idle' ? 'warning' : 'default'}>{agent.status}</Badge>
                     {agent.lastInvocationAt && (
                       <span className="text-xs text-text-muted shrink-0">
@@ -313,6 +323,7 @@ export default function Monitor() {
                   <thead>
                     <tr className="border-b border-dark-border text-left">
                       <th className="pb-3 text-xs font-medium text-text-muted uppercase tracking-wider">Agent</th>
+                      <th className="pb-3 text-xs font-medium text-text-muted uppercase tracking-wider">Mode</th>
                       <th className="pb-3 text-xs font-medium text-text-muted uppercase tracking-wider">Status</th>
                       <th className="pb-3 text-xs font-medium text-text-muted uppercase tracking-wider">Quality</th>
                       <th className="pb-3 text-xs font-medium text-text-muted uppercase tracking-wider">Requests</th>
@@ -330,6 +341,9 @@ export default function Monitor() {
                             <p className="font-medium text-text-primary">{a.agentName}</p>
                             <p className="text-xs text-text-muted">{a.employeeName} · {a.positionName}</p>
                           </div>
+                        </td>
+                        <td className="py-3">
+                          {(() => { const m = agentDeployMode(a.agentId); return m === 'always-on-ecs' ? <Badge color="success"><Zap size={10} className="inline mr-0.5" />Fargate</Badge> : <Badge color="default">Serverless</Badge>; })()}
                         </td>
                         <td className="py-3"><StatusDot status={a.status} /></td>
                         <td className="py-3">

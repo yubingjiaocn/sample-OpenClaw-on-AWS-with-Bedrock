@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Bot, Plus, Users, Star, Zap, Edit3, Play, Settings, Eye, Search, Filter, Cpu, SlidersHorizontal, Trash2, RefreshCw, Check } from 'lucide-react';
 import { Card, StatCard, Badge, Button, PageHeader, Table as DataTable, Modal, Input, Select, StatusDot, Tabs } from '../../components/ui';
-import { useAgents, usePositions, useEmployees, useCreateAgent, useModelConfig, useUpdateModelConfig, useUpdateFallbackModel, useSetPositionModel, useRemovePositionModel, useSetEmployeeModel, useRemoveEmployeeModel, useAgentConfig, useSetPositionAgentConfig, useSetEmployeeAgentConfig } from '../../hooks/useApi';
+import { useAgents, usePositions, useEmployees, useCreateAgent, useModelConfig, useUpdateModelConfig, useUpdateFallbackModel, useSetPositionModel, useRemovePositionModel, useSetEmployeeModel, useRemoveEmployeeModel, useAgentConfig, useSetPositionAgentConfig, useSetEmployeeAgentConfig, useSecurityRuntimes, usePositionRuntimeMap } from '../../hooks/useApi';
 import { CHANNEL_LABELS } from '../../types';
 import type { Agent, ChannelType } from '../../types';
 
@@ -51,6 +51,10 @@ export default function AgentList() {
   const [newEmp, setNewEmp] = useState('');
   const [newChannels, setNewChannels] = useState<string[]>(['discord']);
   const [newDeployMode, setNewDeployMode] = useState<'serverless' | 'always-on-ecs'>('serverless');
+  const [newTier, setNewTier] = useState('');
+  const { data: runtimesData } = useSecurityRuntimes();
+  const { data: posRuntimeMap } = usePositionRuntimeMap();
+  const runtimes = (runtimesData as any)?.runtimes || [];
   const [filterText, setFilterText] = useState('');
   const [filterDept, setFilterDept] = useState('all');
   const [filterStatus, setFilterStatus] = useState('all');
@@ -226,7 +230,15 @@ export default function AgentList() {
                         {isOn && <Badge color="info" dot>{isStarting ? 'Starting…' : 'Always-on'}</Badge>}
                         {a.employeeId && <Badge color="default">{a.employeeName || a.employeeId}</Badge>}
                       </div>
-                      <p className="text-xs text-text-muted">{a.positionName} · ECS Fargate{a.ecsServiceName ? ` · ${a.ecsServiceName}` : ''}</p>
+                      <p className="text-xs text-text-muted">
+                        {a.positionName} · ECS Fargate
+                        {(() => {
+                          const rt = runtimes.find((r: any) => r.name?.toLowerCase().includes(a.positionName?.toLowerCase().split(' ')[0]));
+                          const model = rt ? (m.availableModels?.find((mo: any) => mo.modelId === rt.model)?.modelName || rt.model?.split('/').pop()?.split(':')[0]) : null;
+                          return model ? ` · ${model}` : '';
+                        })()}
+                        {` · ~$${a.positionName?.toLowerCase().includes('exec') || a.positionName?.toLowerCase().includes('engineer') ? '16' : '7'}/mo`}
+                      </p>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <Button size="sm" variant="ghost" onClick={() => navigate(`/agents/${a.id}`)}>
@@ -360,9 +372,10 @@ export default function AgentList() {
                       defaultChannel: defaultCh,
                       skills: pos?.defaultSkills || [],
                       deployMode: newDeployMode,
+                      ...(newDeployMode === 'always-on-ecs' && newTier ? { runtimeId: newTier } : {}),
                     } as any);
                   }
-                  setShowCreate(false); setNewName(''); setNewPos(''); setNewEmp(''); setNewDeployMode('serverless'); setCreateStep(0);
+                  setShowCreate(false); setNewName(''); setNewPos(''); setNewEmp(''); setNewDeployMode('serverless'); setNewTier(''); setCreateStep(0);
                 }}>Create Agent</Button>
               )}
             </div>
@@ -404,6 +417,58 @@ export default function AgentList() {
                 </button>
               </div>
             </div>
+            {/* Tier/Runtime selector — shown only for always-on mode */}
+            {newDeployMode === 'always-on-ecs' && (
+              <div className="rounded-xl bg-cyan/5 border border-cyan/20 p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                  <Zap size={14} className="text-cyan" />
+                  <span className="text-xs font-semibold text-text-primary">Fargate Configuration</span>
+                </div>
+                {runtimes.length > 0 ? (
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium text-text-secondary">Runtime Tier</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {runtimes.map((rt: any) => {
+                        const isSelected = newTier === rt.id;
+                        return (
+                          <button
+                            key={rt.id}
+                            onClick={() => setNewTier(rt.id)}
+                            className={`rounded-lg border p-2.5 text-left transition-all ${isSelected ? 'border-primary ring-2 ring-primary/30 bg-primary/5' : 'border-dark-border/40 hover:border-dark-border'}`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-semibold">{rt.name || rt.id}</span>
+                              {isSelected ? (
+                                <div className="flex h-4 w-4 items-center justify-center rounded-full bg-primary"><Check size={10} className="text-white" /></div>
+                              ) : (
+                                <div className="h-4 w-4 rounded-full border border-dark-border" />
+                              )}
+                            </div>
+                            <p className="text-[10px] text-text-muted mt-1">
+                              {rt.model || 'Default model'}
+                              {rt.guardrailId ? ` · Guardrail` : ' · No guardrail'}
+                            </p>
+                            <p className="text-[10px] text-text-muted">
+                              v{rt.version || '1'} · {rt.id?.slice(-8)}
+                            </p>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {newPos && (posRuntimeMap as any)?.map?.[newPos] && (
+                      <p className="text-[10px] text-info">
+                        Position "{POSITIONS.find(p => p.id === newPos)?.name}" is mapped to runtime: {(posRuntimeMap as any).map[newPos]}
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-center py-3">
+                    <p className="text-xs text-text-muted">No runtimes configured yet.</p>
+                    <p className="text-[10px] text-text-muted mt-1">Go to Security Center → Agent Runtimes to create runtime tiers first.</p>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
         {createStep === 1 && (
@@ -439,6 +504,9 @@ export default function AgentList() {
               <div><p className="text-xs text-text-muted">Employee</p><p className="text-sm font-medium">{EMPLOYEES.find(e => e.id === newEmp)?.name || '(not selected)'}</p></div>
               <div><p className="text-xs text-text-muted">Default Channel</p><p className="text-sm font-medium">{POSITIONS.find(p => p.id === newPos)?.defaultChannel || 'discord'}</p></div>
               <div><p className="text-xs text-text-muted">Deployment</p><p className="text-sm font-medium">{newDeployMode === 'always-on-ecs' ? '⚡ Always-on (Fargate)' : 'Serverless (AgentCore)'}</p></div>
+              {newDeployMode === 'always-on-ecs' && newTier && (
+                <div><p className="text-xs text-text-muted">Runtime Tier</p><p className="text-sm font-medium">{runtimes.find((r:any) => r.id === newTier)?.name || newTier}</p></div>
+              )}
             </div>
           </div>
         )}

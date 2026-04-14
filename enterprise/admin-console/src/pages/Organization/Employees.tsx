@@ -437,6 +437,24 @@ export default function Employees() {
       }>
         <div className="space-y-3">
           <p className="text-sm text-text-primary">Delete employee <strong>{deletingEmp?.name}</strong>?</p>
+          {/* Always-On cleanup warning */}
+          {(() => {
+            const empAgent = AGENTS.find(a => a.employeeId === deletingEmp?.id);
+            const isAlwaysOn = empAgent?.deployMode === 'always-on-ecs';
+            return isAlwaysOn ? (
+              <div className="rounded-lg bg-warning/10 border border-warning/30 px-3 py-2.5 text-xs space-y-1">
+                <p className="font-semibold text-warning">Always-On agent will be cleaned up:</p>
+                <ul className="list-disc list-inside text-text-secondary space-y-0.5">
+                  <li>Stop & delete ECS Fargate service</li>
+                  <li>Delete EFS Access Point & workspace files</li>
+                  <li>Remove IM credentials (DynamoDB)</li>
+                  <li>Deregister SSM endpoint</li>
+                  <li>Delete S3 serverless workspace</li>
+                  <li>Remove all session, conversation, and usage records</li>
+                </ul>
+              </div>
+            ) : null;
+          })()}
           {deleteError && (
             <div className="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2.5">
               <AlertTriangle size={16} className="text-danger mt-0.5 shrink-0" />

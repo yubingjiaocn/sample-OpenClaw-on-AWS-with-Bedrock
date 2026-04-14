@@ -94,7 +94,15 @@ export default function MyAgents() {
             <div>
               <h3 className="font-semibold text-text-primary">Always-On Agent</h3>
               {alwaysOn.enabled ? (
-                <p className="text-xs text-text-muted">{alwaysOn.tier} tier &middot; Instant response, HEARTBEAT enabled</p>
+                <p className="text-xs text-text-muted">
+                  {alwaysOn.tier} tier
+                  {alwaysOn.model ? ` · ${alwaysOn.model}` : ''}
+                  {' · '}Instant response
+                  {alwaysOn.createdAt ? ` · Uptime: ${(() => {
+                    const hrs = Math.floor((Date.now() - new Date(alwaysOn.createdAt).getTime()) / 3600000);
+                    return hrs < 24 ? `${hrs}h` : `${Math.floor(hrs / 24)}d ${hrs % 24}h`;
+                  })()}` : ''}
+                </p>
               ) : (
                 <p className="text-xs text-text-muted">Not configured</p>
               )}

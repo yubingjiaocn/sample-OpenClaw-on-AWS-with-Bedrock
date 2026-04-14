@@ -515,10 +515,10 @@ export function useSaveSoul() {
 
 // === Workspace file operations ===
 
-export function useWorkspaceTree(agentId: string) {
+export function useWorkspaceTree(agentId: string, agentType?: 'serverless' | 'always-on') {
   return useQuery({
-    queryKey: ['workspace-tree', agentId],
-    queryFn: () => api.get(`/workspace/tree?agent_id=${agentId}`),
+    queryKey: ['workspace-tree', agentId, agentType],
+    queryFn: () => api.get(`/workspace/tree?agent_id=${agentId}${agentType ? `&agent_type=${agentType}` : ''}`),
     enabled: !!agentId,
   });
 }
@@ -1205,7 +1205,12 @@ export function useAlwaysOnStatus(empId: string) {
     queryKey: ['always-on-status', empId],
     queryFn: () => api.get(`/agents/${empId}/always-on/status`),
     enabled: !!empId,
-    refetchInterval: 30000,
+    refetchInterval: (query) => {
+      const data = query.state.data as any;
+      // Poll faster (5s) when container is starting/stopping, slower (30s) when stable
+      const status = data?.ecsStatus || data?.status;
+      return status === 'starting' || status === 'stopping' || status === 'PROVISIONING' ? 5000 : 30000;
+    },
   });
 }
 

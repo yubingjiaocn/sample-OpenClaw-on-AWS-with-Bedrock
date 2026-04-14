@@ -2,9 +2,9 @@ import { useParams, useNavigate } from 'react-router-dom';
 import Chart from 'react-apexcharts';
 import type { ApexOptions } from 'apexcharts';
 import { useState } from 'react';
-import { ArrowLeft, Edit3, MessageSquare, Eye, Loader, FolderOpen, RefreshCw, Trash2 } from 'lucide-react';
-import { Card, Badge, Button, PageHeader, StatusDot, Modal } from '../../components/ui';
-import { useAgent, useAgents, usePositions, useBindings, useSessions, useAgentDailyUsage, useAlwaysOnStatus, useAlwaysOnChannels, useEnableAlwaysOn, useDisconnectChannel } from '../../hooks/useApi';
+import { ArrowLeft, Edit3, MessageSquare, Eye, Loader, FolderOpen, RefreshCw, Trash2, Zap, AlertTriangle, Shield, Radio, Clock, Link2 } from 'lucide-react';
+import { Card, Badge, Button, PageHeader, StatusDot, Modal, Tabs } from '../../components/ui';
+import { useAgent, useAgents, usePositions, useEmployees, useBindings, useSessions, useAgentDailyUsage, useAlwaysOnStatus, useAlwaysOnChannels, useEnableAlwaysOn, useDisconnectChannel, useSecurityRuntimes, usePositionRuntimeMap, useModelConfig, useAuditEntries, useSetIMPlatforms } from '../../hooks/useApi';
 import { api } from '../../api/client';
 import { CHANNEL_LABELS } from '../../types';
 import type { ChannelType } from '../../types';
@@ -44,11 +44,31 @@ export default function AgentDetail() {
   const { data: dailyUsage = [] } = useAgentDailyUsage(agentId || '');
   const [showDelete, setShowDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [agentTab, setAgentTab] = useState<'serverless' | 'always-on'>('serverless');
+  const { data: auditData = [] } = useAuditEntries({ limit: 20 });
+  const setIMPlatforms = useSetIMPlatforms();
+  const [confirmDisconnect, setConfirmDisconnect] = useState<string | null>(null);
   const empId = agent?.employeeId || '';
   const { data: aoStatus } = useAlwaysOnStatus(empId) as { data: any };
   const { data: aoChannels } = useAlwaysOnChannels(empId) as { data: any };
   const enableAO = useEnableAlwaysOn();
   const disconnectCh = useDisconnectChannel();
+  const { data: runtimesData } = useSecurityRuntimes() as { data: any };
+  const { data: posRuntimeMap } = usePositionRuntimeMap() as { data: any };
+  const { data: mc } = useModelConfig() as { data: any };
+  const { data: employees = [] } = useEmployees();
+  const runtimes = (runtimesData as any)?.runtimes || [];
+  const models = mc?.availableModels || [];
+  // Lookup tier runtime config
+  const tierRuntime = runtimes.find((rt: any) => {
+    const posId = agent?.positionId || '';
+    const mapped = posId ? (posRuntimeMap as any)?.map?.[posId] : undefined;
+    return mapped === rt.id || rt.name?.toLowerCase().includes(aoStatus?.tier?.toLowerCase());
+  });
+  const tierModel = tierRuntime ? (models.find((m: any) => m.modelId === tierRuntime.model)?.modelName || tierRuntime.model?.split('/').pop()?.split(':')[0] || '—') : '—';
+  // Position change detection
+  const currentEmployee = employees.find((e: any) => e.id === empId);
+  const positionMismatch = agent && currentEmployee && agent.positionId !== currentEmployee.positionId;
 
   if (isLoading) {
     return <div className="flex items-center justify-center py-20"><Loader size={24} className="animate-spin text-primary" /></div>;
@@ -98,8 +118,8 @@ export default function AgentDetail() {
           <div className="mt-1"><StatusDot status={agent.status} /></div>
         </Card>
         <Card>
-          <p className="text-xs text-text-muted">Quality Score</p>
-          <p className="mt-1 text-xl font-bold text-warning">⭐ {agent.qualityScore || '—'}</p>
+          <p className="text-xs text-text-muted">Deploy Mode</p>
+          <p className="mt-1 text-sm font-bold">{aoStatus?.enabled ? <><Zap size={14} className="inline text-success mr-1" />Dual Agent</> : <><Radio size={14} className="inline text-primary mr-1" />Serverless</>}</p>
         </Card>
         <Card>
           <p className="text-xs text-text-muted">Skills</p>
@@ -114,10 +134,173 @@ export default function AgentDetail() {
           <p className="mt-1 text-xl font-bold text-success">{sessions.length}</p>
         </Card>
         <Card>
-          <p className="text-xs text-text-muted">Bindings</p>
-          <p className="mt-1 text-xl font-bold">{bindings.length}</p>
+          <p className="text-xs text-text-muted">Quality</p>
+          <p className="mt-1 text-xl font-bold text-warning">⭐ {agent.qualityScore || '—'}</p>
         </Card>
       </div>
+
+      {/* ── Dual Agent Tabs ── */}
+      <Card className="mb-6">
+        <Tabs
+          tabs={[
+            { id: 'serverless', label: '📡 Serverless Agent' },
+            ...(aoStatus?.enabled ? [{ id: 'always-on', label: '⚡ Always-On Agent' }] : []),
+          ]}
+          activeTab={agentTab}
+          onChange={t => setAgentTab(t as any)}
+        />
+
+        <div className="mt-4">
+          {/* ── SERVERLESS TAB ── */}
+          {agentTab === 'serverless' && (
+            <div className="space-y-4">
+              <div className="rounded-xl bg-primary/5 border border-primary/20 px-4 py-3 flex items-center gap-3">
+                <Radio size={16} className="text-primary shrink-0" />
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-text-primary">Serverless Agent — AgentCore microVM</p>
+                  <p className="text-xs text-text-muted">On-demand execution via shared infrastructure. Storage: S3. ~10s cold start.</p>
+                </div>
+                <Button size="sm" variant="ghost" onClick={() => navigate(`/workspace?agent=${agent.id}`)}>
+                  <FolderOpen size={12} /> S3 Workspace
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* ── ALWAYS-ON TAB ── */}
+          {agentTab === 'always-on' && aoStatus?.enabled && (
+            <div className="space-y-4">
+              {/* Position change warning */}
+              {positionMismatch && (
+                <div className="flex items-start gap-3 rounded-xl bg-warning/10 border border-warning/30 px-4 py-3">
+                  <AlertTriangle size={16} className="text-warning mt-0.5 shrink-0" />
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-text-primary">Position Changed — Container Needs Restart</p>
+                    <p className="text-xs text-text-muted mt-0.5">
+                      Employee moved from <strong>{agent?.positionName}</strong> to <strong>{currentEmployee?.positionName}</strong>.
+                    </p>
+                  </div>
+                  <Button size="sm" variant="danger" onClick={() => api.post(`/agents/${empId}/always-on/restart`, {}).then(() => window.location.reload())}>
+                    <RefreshCw size={12} /> Restart Now
+                  </Button>
+                </div>
+              )}
+
+              {/* Fargate status */}
+              <div className="rounded-xl bg-success/5 border border-success/20 px-4 py-3 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <Zap size={16} className="text-success shrink-0" />
+                  <div>
+                    <p className="text-sm font-medium text-text-primary">Always-On Agent — ECS Fargate</p>
+                    <p className="text-xs text-text-muted">24/7 container · EFS persistent storage · HEARTBEAT enabled</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge color={aoStatus.running ? 'success' : 'danger'}>{aoStatus.running ? 'Running' : aoStatus.ecsStatus || 'Stopped'}</Badge>
+                  <Button size="sm" variant="ghost" onClick={() => api.post(`/agents/${empId}/always-on/restart`, {}).then(() => window.location.reload())}><RefreshCw size={12} /> Restart</Button>
+                  <Button size="sm" variant="ghost" className="text-danger" onClick={() => enableAO.mutate({ empId, enable: false })}>Stop</Button>
+                  <Button size="sm" variant="ghost" onClick={() => navigate(`/workspace?agent=${agent.id}&type=always-on`)}><FolderOpen size={12} /> EFS Workspace</Button>
+                </div>
+              </div>
+
+              {/* Runtime config grid */}
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                {[
+                  { label: 'Tier', value: aoStatus.tier },
+                  { label: 'Model', value: tierModel },
+                  { label: 'IAM Role', value: tierRuntime?.roleArn?.split('/').pop() || '—' },
+                  { label: 'Guardrail', value: tierRuntime?.guardrailId || 'None' },
+                  { label: 'Service', value: aoStatus.serviceName || '—' },
+                  { label: 'Endpoint', value: aoStatus.endpoint || '—' },
+                  { label: 'Est. Cost', value: `~$${aoStatus.tier === 'executive' || aoStatus.tier === 'engineering' ? '16' : '7'}/mo` },
+                  { label: 'Storage', value: 'EFS (Persistent)' },
+                ].map(r => (
+                  <div key={r.label} className="rounded-lg bg-dark-bg px-3 py-2">
+                    <p className="text-[10px] text-text-muted">{r.label}</p>
+                    <p className="text-xs font-mono text-text-secondary truncate">{r.value}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* P1-A: IM Whitelist + Connections */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-sm font-semibold text-text-primary flex items-center gap-2"><Link2 size={14} /> IM Channel Management</h4>
+                </div>
+
+                {/* Allowed platforms from position */}
+                <div className="rounded-lg bg-surface-dim px-3 py-2">
+                  <p className="text-[10px] text-text-muted mb-1.5">Allowed Platforms (from position: {agent.positionName})</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {['feishu', 'telegram', 'slack', 'discord', 'dingtalk', 'whatsapp'].map(p => {
+                      const allowed = (position as any)?.allowedIMPlatforms;
+                      const isAllowed = !allowed || allowed.length === 0 || allowed.includes(p);
+                      return (
+                        <span key={p} className={`text-[10px] px-2 py-0.5 rounded-full ${isAllowed ? 'bg-success/10 text-success' : 'bg-dark-bg text-text-muted line-through'}`}>
+                          {isAllowed ? '✓' : '✗'} {p}
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Connected channels */}
+                {(aoChannels?.channels || []).length === 0 ? (
+                  <p className="text-xs text-text-muted py-2">No IM channels connected. Employee can connect via Portal → Connect IM.</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {(aoChannels?.channels || []).map((ch: any) => (
+                      <div key={ch.channel} className="flex items-center justify-between rounded-lg bg-dark-bg px-3 py-2">
+                        <div className="flex items-center gap-2">
+                          <Badge color="success">{ch.channel}</Badge>
+                          <span className="text-xs text-text-muted">Connected {ch.connectedAt ? new Date(ch.connectedAt).toLocaleDateString() : ''}</span>
+                        </div>
+                        {confirmDisconnect === ch.channel ? (
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] text-danger">Confirm?</span>
+                            <Button variant="danger" size="sm" onClick={() => { disconnectCh.mutate({ empId, channel: ch.channel }); setConfirmDisconnect(null); }}>Yes</Button>
+                            <Button variant="ghost" size="sm" onClick={() => setConfirmDisconnect(null)}>No</Button>
+                          </div>
+                        ) : (
+                          <Button variant="ghost" size="sm" className="text-danger" onClick={() => setConfirmDisconnect(ch.channel)}>
+                            Disconnect
+                          </Button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* P1-B: IM Audit log inline */}
+                <div className="rounded-lg bg-surface-dim px-3 py-2">
+                  <p className="text-[10px] text-text-muted mb-1.5">Recent IM Events</p>
+                  {(() => {
+                    const imEvents = auditData.filter(e =>
+                      (e.actorName === agent.employeeName || e.detail?.includes(empId)) &&
+                      (['im_channel_connected', 'im_channel_disconnected', 'always_on_enabled', 'always_on_disabled', 'config_change'].includes(e.eventType))
+                    ).slice(0, 5);
+                    return imEvents.length === 0 ? (
+                      <p className="text-xs text-text-muted">No IM events recorded yet.</p>
+                    ) : (
+                      <div className="space-y-1">
+                        {imEvents.map((e, i) => (
+                          <div key={i} className="flex items-center gap-2 text-xs">
+                            <span className="text-text-muted w-16 shrink-0">{new Date(e.timestamp).toLocaleTimeString()}</span>
+                            <Badge color={e.eventType.includes('connected') || e.eventType.includes('enabled') ? 'success' : 'danger'}>
+                              {e.eventType.replace(/_/g, ' ')}
+                            </Badge>
+                            <span className="text-text-secondary truncate">{e.detail}</span>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </Card>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3 mb-6">
         {/* Activity Stats */}
@@ -216,81 +399,7 @@ export default function AgentDetail() {
         </Card>
       </div>
 
-      {/* Always-On Agent */}
-      <Card className="mb-6">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-text-primary">Always-On Agent (Fargate)</h3>
-          {aoStatus?.enabled ? (
-            <div className="flex items-center gap-2">
-              <Badge color={aoStatus.running ? 'success' : 'danger'}>
-                {aoStatus.running ? 'Running' : aoStatus.ecsStatus || 'Stopped'}
-              </Badge>
-              <Badge>{aoStatus.tier} tier</Badge>
-              <Button variant="default" size="sm" onClick={() => enableAO.mutate({ empId, enable: false })}>
-                Stop
-              </Button>
-            </div>
-          ) : (
-            <Button variant="primary" size="sm" onClick={() => enableAO.mutate({ empId, enable: true })}
-              disabled={enableAO.isPending}>
-              {enableAO.isPending ? 'Starting...' : 'Enable Always-On'}
-            </Button>
-          )}
-        </div>
-
-        {!aoStatus?.enabled && (
-          <p className="text-sm text-text-muted">
-            Always-on mode gives this employee a dedicated Fargate container with instant response,
-            persistent IM connections, and HEARTBEAT support. ~$7-16/month.
-          </p>
-        )}
-
-        {aoStatus?.enabled && (
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-              <div className="rounded-lg bg-dark-bg px-3 py-2">
-                <p className="text-xs text-text-muted">Tier</p>
-                <p className="text-sm font-semibold">{aoStatus.tier}</p>
-              </div>
-              <div className="rounded-lg bg-dark-bg px-3 py-2">
-                <p className="text-xs text-text-muted">Service</p>
-                <p className="text-sm font-mono text-text-secondary">{aoStatus.serviceName || '—'}</p>
-              </div>
-              <div className="rounded-lg bg-dark-bg px-3 py-2">
-                <p className="text-xs text-text-muted">Status</p>
-                <p className="text-sm font-semibold">{aoStatus.ecsStatus}</p>
-              </div>
-              <div className="rounded-lg bg-dark-bg px-3 py-2">
-                <p className="text-xs text-text-muted">Endpoint</p>
-                <p className="text-sm font-mono text-text-secondary truncate">{aoStatus.endpoint || '—'}</p>
-              </div>
-            </div>
-
-            {/* IM Connections */}
-            <div>
-              <p className="text-sm font-medium text-text-primary mb-2">IM Connections</p>
-              {(aoChannels?.channels || []).length === 0 ? (
-                <p className="text-xs text-text-muted">No IM channels connected. Employee can connect via Portal → My Agents.</p>
-              ) : (
-                <div className="space-y-2">
-                  {(aoChannels?.channels || []).map((ch: any) => (
-                    <div key={ch.channel} className="flex items-center justify-between rounded-lg bg-dark-bg px-3 py-2">
-                      <div className="flex items-center gap-2">
-                        <Badge color="success">{ch.channel}</Badge>
-                        <span className="text-xs text-text-muted">Connected {ch.connectedAt ? new Date(ch.connectedAt).toLocaleDateString() : ''}</span>
-                      </div>
-                      <Button variant="ghost" size="sm"
-                        onClick={() => disconnectCh.mutate({ empId, channel: ch.channel })}>
-                        Disconnect
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-      </Card>
+      {/* (Always-On section moved into tabs above) */}
 
       {/* Active Sessions */}
       {sessions.length > 0 && (

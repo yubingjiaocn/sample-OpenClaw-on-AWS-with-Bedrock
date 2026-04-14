@@ -191,6 +191,7 @@ function PlatformLogsTab() {
     { label: 'Admin Console (openclaw-admin)', value: 'openclaw-admin' },
     { label: 'Tenant Router', value: 'tenant-router' },
     { label: 'Bedrock H2 Proxy', value: 'bedrock-proxy-h2' },
+    { label: 'Fargate Containers (CloudWatch)', value: 'fargate-containers' },
   ];
 
   const handleRestart = async (svcName: string) => {
@@ -453,6 +454,7 @@ function SystemTab() {
           { name: 'Bedrock', status: svc.bedrock.status, details: [`Region: ${svc.bedrock.region}`, `Latency: ${svc.bedrock.latencyMs}ms`, svc.bedrock.vpcEndpoint ? 'VPC Endpoint' : 'Public endpoint'] },
           { name: 'DynamoDB', status: svc.dynamodb.status, details: [svc.dynamodb.table, `${svc.dynamodb.itemCount} items`] },
           { name: 'S3', status: svc.s3.status, details: [svc.s3.bucket] },
+          { name: 'ECS Fargate', status: (svc as any).ecs?.status || 'not configured', details: [(svc as any).ecs?.cluster || 'No cluster', `${(svc as any).ecs?.runningTasks || 0} running tasks`] },
         ].map(s => {
           const ok = ['running', 'healthy', 'connected', 'active'].includes(s.status);
           return (

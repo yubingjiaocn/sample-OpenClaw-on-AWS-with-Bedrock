@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import Chart from 'react-apexcharts';
 import type { ApexOptions } from 'apexcharts';
-import { DollarSign, TrendingUp, TrendingDown, Users, Bot, AlertTriangle, Download, Cpu, Plus, Edit3, Save, Wallet } from 'lucide-react';
+import { DollarSign, TrendingUp, TrendingDown, Users, Bot, AlertTriangle, Download, Cpu, Plus, Edit3, Save, Wallet, Zap } from 'lucide-react';
 import { Card, StatCard, Badge, Button, PageHeader, Table, Tabs, Select, Modal } from '../components/ui';
-import { useUsageSummary, useUsageByDepartment, useUsageByAgent, useUsageBudgets, useUsageTrend, useUsageByModel, useModelConfig, useUpdateModelConfig, useUpdateFallbackModel, usePositions, useAgentConfig, useKBAssignments, useUpdateBudgets } from '../hooks/useApi';
+import { useUsageSummary, useUsageByDepartment, useUsageByAgent, useUsageBudgets, useUsageTrend, useUsageByModel, useModelConfig, useUpdateModelConfig, useUpdateFallbackModel, usePositions, useAgentConfig, useKBAssignments, useUpdateBudgets, useAgents } from '../hooks/useApi';
 import { useAuth } from '../contexts/AuthContext';
 
 const costTrendOpts: ApexOptions = {
@@ -26,6 +26,8 @@ export default function Usage() {
   const { data: summary } = useUsageSummary();
   const { data: byDept = [] } = useUsageByDepartment();
   const { data: byAgent = [] } = useUsageByAgent();
+  const { data: AGENTS = [] } = useAgents();
+  const getAgentMode = (agentId: string) => AGENTS.find(a => a.id === agentId)?.deployMode;
   const { data: byModel = [] } = useUsageByModel();
   const { data: budgets = [] } = useUsageBudgets();
   const { data: trend = [] } = useUsageTrend();
@@ -125,12 +127,13 @@ export default function Usage() {
         }
       />
 
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-5 mb-6">
-        <StatCard title="Total Cost" value={`$${s.totalCost.toFixed(2)}`} subtitle={`${s.totalRequests} requests`} icon={<DollarSign size={22} />} color="success" />
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-6 mb-6">
+        <StatCard title="Bedrock Cost" value={`$${s.totalCost.toFixed(2)}`} subtitle={`${s.totalRequests} requests`} icon={<DollarSign size={22} />} color="success" />
+        <StatCard title="Fargate Cost" value={(() => { const aoCount = AGENTS.filter(a => a.deployMode === 'always-on-ecs').length; const est = aoCount * 12; return aoCount > 0 ? `~$${est}/mo` : '$0'; })()} subtitle={`${AGENTS.filter(a => a.deployMode === 'always-on-ecs').length} containers`} icon={<Zap size={22} />} color="cyan" />
         <StatCard title="Input Tokens" value={`${(s.totalInputTokens / 1000).toFixed(0)}k`} subtitle="Today" icon={<TrendingUp size={22} />} color="primary" />
         <StatCard title="Output Tokens" value={`${(s.totalOutputTokens / 1000).toFixed(0)}k`} subtitle="Today" icon={<TrendingDown size={22} />} color="info" />
-        <StatCard title="Active Tenants" value={s.tenantCount} subtitle="With agents" icon={<Users size={22} />} color="cyan" />
-        <StatCard title="Avg Cost/Request" value={s.totalRequests > 0 ? `$${(s.totalCost / s.totalRequests).toFixed(4)}` : '—'} subtitle="Per invocation" icon={<Bot size={22} />} color="warning" />
+        <StatCard title="Active Tenants" value={s.tenantCount} subtitle="With agents" icon={<Users size={22} />} color="warning" />
+        <StatCard title="Avg Cost/Req" value={s.totalRequests > 0 ? `$${(s.totalCost / s.totalRequests).toFixed(4)}` : '—'} subtitle="Per invocation" icon={<Bot size={22} />} color="info" />
       </div>
 
       {/* Cost trend chart */}
@@ -220,6 +223,12 @@ export default function Usage() {
                 { key: 'agent', label: 'Agent', render: (a: typeof byAgent[0]) => (
                   <div><p className="font-medium">{a.agentName}</p><p className="text-xs text-text-muted">{a.employeeName}</p></div>
                 )},
+                { key: 'mode', label: 'Mode', render: (a: typeof byAgent[0]) => {
+                  const mode = getAgentMode(a.agentId);
+                  return mode === 'always-on-ecs'
+                    ? <Badge color="success"><Zap size={10} className="inline mr-0.5" />Fargate</Badge>
+                    : <Badge color="default">Serverless</Badge>;
+                }},
                 { key: 'position', label: 'Position', render: (a: typeof byAgent[0]) => <Badge>{a.positionName}</Badge> },
                 { key: 'requests', label: 'Requests', render: (a: typeof byAgent[0]) => a.requests },
                 { key: 'input', label: 'Input', render: (a: typeof byAgent[0]) => `${(a.inputTokens / 1000).toFixed(1)}k` },

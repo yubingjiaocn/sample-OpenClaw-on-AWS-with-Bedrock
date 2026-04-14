@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { CheckCircle, Loader2, RefreshCw, Link2, ExternalLink, Clock, AlertCircle, UserPlus, Zap, Radio } from 'lucide-react';
-import { Card, Badge, Button } from '../../components/ui';
+import { CheckCircle, Loader2, RefreshCw, Link2, ExternalLink, Clock, AlertCircle, UserPlus, Zap, Radio, Copy, Key } from 'lucide-react';
+import { Card, Badge, Button, Modal } from '../../components/ui';
 import { api } from '../../api/client';
 import { IM_ICONS } from '../../components/IMIcons';
+import { usePortalAgent } from '../../contexts/PortalAgentContext';
 
 interface Channel {
   id: string;
@@ -269,6 +270,121 @@ function ChannelWizard({ channel, onDone, onCancel }: { channel: Channel; onDone
   );
 }
 
+// ── Credential fields per IM platform ──────────────────────────────────────
+const CREDENTIAL_FIELDS: Record<string, { label: string; key: string; placeholder: string; secret?: boolean }[]> = {
+  feishu:    [{ label: 'App ID', key: 'appId', placeholder: 'cli_xxxxxxxxxxxxxxxx' }, { label: 'App Secret', key: 'appSecret', placeholder: 'Enter app secret', secret: true }],
+  telegram:  [{ label: 'Bot Token', key: 'token', placeholder: '123456789:ABCdefGhIJKlmNoPQRsTUVwxYZ', secret: true }],
+  slack:     [{ label: 'Bot Token', key: 'botToken', placeholder: 'xoxb-...', secret: true }, { label: 'App Token', key: 'appToken', placeholder: 'xapp-...', secret: true }],
+  discord:   [{ label: 'Bot Token', key: 'token', placeholder: 'Enter Discord bot token', secret: true }],
+  dingtalk:  [{ label: 'App Key', key: 'appKey', placeholder: 'dingxxxxxxxx' }, { label: 'App Secret', key: 'appSecret', placeholder: 'Enter app secret', secret: true }],
+  teams:     [{ label: 'App ID', key: 'appId', placeholder: 'Enter Teams app ID' }, { label: 'App Secret', key: 'appSecret', placeholder: 'Enter secret', secret: true }],
+  googlechat:[{ label: 'Service Account JSON', key: 'serviceAccount', placeholder: 'Paste service account JSON', secret: true }],
+  whatsapp:  [{ label: 'Phone Number ID', key: 'phoneNumberId', placeholder: 'Enter phone number ID' }, { label: 'Access Token', key: 'accessToken', placeholder: 'Enter access token', secret: true }],
+  wechat:    [{ label: 'App ID', key: 'appId', placeholder: 'Enter WeChat app ID' }, { label: 'App Secret', key: 'appSecret', placeholder: 'Enter secret', secret: true }],
+};
+
+const PLATFORM_SETUP_GUIDE: Record<string, string[]> = {
+  feishu:   ['1. Go to open.feishu.cn → Create Enterprise App', '2. Enable "Bot" capability', '3. Set Event Subscription URL to the webhook URL below', '4. Submit for enterprise admin approval', '5. After approval, enter App ID and App Secret below'],
+  telegram: ['1. Open Telegram → message @BotFather', '2. Send /newbot → follow instructions', '3. Copy the bot token'],
+  slack:    ['1. Go to api.slack.com/apps → Create New App', '2. Add Bot Token Scopes (chat:write, channels:history)', '3. Install to workspace → copy Bot Token & App Token'],
+  discord:  ['1. Go to discord.com/developers → New Application', '2. Create a Bot → copy token', '3. Invite bot to your server with message permissions'],
+};
+
+function AlwaysOnChannelConnect({ channel, endpoint, onDone, onCancel }: { channel: Channel; endpoint: string; onDone: () => void; onCancel: () => void }) {
+  const fields = CREDENTIAL_FIELDS[channel.id] || [{ label: 'Token', key: 'token', placeholder: 'Enter token', secret: true }];
+  const guide = PLATFORM_SETUP_GUIDE[channel.id];
+  const [creds, setCreds] = useState<Record<string, string>>({});
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  const [done, setDone] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const webhookUrl = endpoint ? `${endpoint}/webhook/${channel.id}` : '';
+
+  const handleSubmit = async () => {
+    const missing = fields.filter(f => !creds[f.key]?.trim());
+    if (missing.length > 0) { setError(`Please fill in: ${missing.map(f => f.label).join(', ')}`); return; }
+    setSubmitting(true); setError('');
+    try {
+      await api.post('/portal/agent/channels/add', { channel: channel.id, credentials: creds });
+      setDone(true);
+      setTimeout(onDone, 2000);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || e?.message || 'Connection failed');
+    } finally { setSubmitting(false); }
+  };
+
+  if (done) return (
+    <div className="flex flex-col items-center py-8 gap-3 text-center">
+      <div className="flex h-16 w-16 items-center justify-center rounded-full bg-success/10">
+        <CheckCircle size={36} className="text-success" />
+      </div>
+      <h3 className="text-base font-semibold text-text-primary">Connected!</h3>
+      <p className="text-sm text-text-muted">Your {channel.label} is now linked to your Always-On Agent.</p>
+    </div>
+  );
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl bg-surface-dim p-4 text-center">
+        <div className="flex justify-center mb-2">{IM_ICONS[channel.id] ? (() => { const Icon = IM_ICONS[channel.id]; return <Icon size={48} />; })() : null}</div>
+        <h3 className="text-base font-semibold text-text-primary">Connect {channel.label}</h3>
+        <p className="text-xs text-text-muted mt-1">Direct connection to your Always-On agent</p>
+      </div>
+
+      {/* Setup guide */}
+      {guide && (
+        <div className="rounded-xl bg-info/5 border border-info/20 p-3 space-y-1">
+          <p className="text-xs font-semibold text-info">Setup Guide</p>
+          {guide.map((step, i) => (
+            <p key={i} className="text-xs text-text-secondary">{step}</p>
+          ))}
+        </div>
+      )}
+
+      {/* Webhook URL (if endpoint available) */}
+      {webhookUrl && (
+        <div>
+          <label className="mb-1 block text-xs font-medium text-text-secondary">Webhook URL (copy to {channel.label} platform)</label>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 text-xs font-mono text-primary-light bg-primary/10 px-3 py-2.5 rounded-lg truncate">{webhookUrl}</code>
+            <button onClick={() => { navigator.clipboard?.writeText(webhookUrl); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+              className="flex-shrink-0 px-2.5 py-2.5 rounded-lg bg-dark-hover text-text-muted hover:text-text-primary text-xs border border-dark-border/40 transition-colors">
+              {copied ? <CheckCircle size={14} className="text-success" /> : <Copy size={14} />}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Credential fields */}
+      {fields.map(f => (
+        <div key={f.key}>
+          <label className="mb-1 block text-xs font-medium text-text-secondary">{f.label}</label>
+          <input
+            type={f.secret ? 'password' : 'text'}
+            value={creds[f.key] || ''}
+            onChange={e => setCreds(prev => ({ ...prev, [f.key]: e.target.value }))}
+            placeholder={f.placeholder}
+            className="w-full rounded-xl border border-dark-border/60 bg-surface-dim px-4 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:border-primary/60 focus:outline-none font-mono"
+          />
+        </div>
+      ))}
+
+      {error && (
+        <div className="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2">
+          <AlertCircle size={14} className="text-danger mt-0.5 shrink-0" />
+          <p className="text-xs text-danger">{error}</p>
+        </div>
+      )}
+
+      <Button variant="primary" className="w-full" onClick={handleSubmit} disabled={submitting}>
+        {submitting ? <><Loader2 size={14} className="animate-spin" /> Connecting...</> : <><Key size={14} /> Connect & Verify</>}
+      </Button>
+      <Button variant="ghost" className="w-full" onClick={onCancel}>Back</Button>
+    </div>
+  );
+}
+
 function GatewayConsoleButton() {
   const [loading, setLoading] = useState(false);
   const [countdown, setCountdown] = useState(0);
@@ -349,6 +465,11 @@ export default function BindIM() {
   const [confirmDisconnect, setConfirmDisconnect] = useState<string | null>(null);
   const [channelInfo, setChannelInfo] = useState<any>(null);
   const [adminConfigured, setAdminConfigured] = useState<string[]>([]);
+  const { agentType: agentMode, hasAlwaysOn, alwaysOnInfo: aoCtx } = usePortalAgent();
+  const [alwaysOnEndpoint, setAlwaysOnEndpoint] = useState('');
+  const [alwaysOnAllowed, setAlwaysOnAllowed] = useState<string[]>([]);
+  const [selectedAOChannel, setSelectedAOChannel] = useState<Channel | null>(null);
+  const [aoConnected, setAoConnected] = useState<string[]>([]);
   const connectedRef = useRef<string[]>([]);
 
   // Fetch which channels admin has configured via OpenClaw Gateway
@@ -356,6 +477,14 @@ export default function BindIM() {
     api.get<{ configured: string[] }>('/portal/im-channel-status')
       .then(d => setAdminConfigured(d.configured || []))
       .catch(() => {});
+    // Fetch always-on details for endpoint and allowed platforms
+    if (hasAlwaysOn) {
+      api.get<any>('/portal/my-agents').then(d => {
+        setAlwaysOnEndpoint(d?.alwaysOn?.endpoint || aoCtx?.endpoint || '');
+        setAlwaysOnAllowed(d?.allowedIMPlatforms || []);
+        setAoConnected((d?.alwaysOn?.imChannels || []).map((c: any) => c.channel || c));
+      }).catch(() => {});
+    }
   }, []);
 
   const fetchChannels = useCallback(() => {
@@ -396,6 +525,19 @@ export default function BindIM() {
     setConfirmDisconnect(null);
   }, []);
 
+  // Always-On channel credential input wizard
+  if (selectedAOChannel) return (
+    <div className="max-w-sm mx-auto p-6">
+      <AlwaysOnChannelConnect
+        channel={selectedAOChannel}
+        endpoint={alwaysOnEndpoint}
+        onDone={() => { setAoConnected(prev => [...prev, selectedAOChannel.id]); setSelectedAOChannel(null); }}
+        onCancel={() => setSelectedAOChannel(null)}
+      />
+    </div>
+  );
+
+  // Serverless channel pairing wizard
   if (selected) return (
     <div className="max-w-sm mx-auto p-6">
       <ChannelWizard
@@ -406,9 +548,8 @@ export default function BindIM() {
     </div>
   );
 
-  const deployMode = channelInfo?.deployMode || 'serverless';
-  const pairingMode = channelInfo?.pairingMode || 'shared-gateway';
   const instructions = channelInfo?.pairingInstructions || {};
+  const effectiveMode = agentMode;
 
   return (
     <div className="max-w-2xl mx-auto p-6 space-y-6">
@@ -419,33 +560,78 @@ export default function BindIM() {
         </p>
       </div>
 
-      {/* Mode Banner */}
-      <div className={`rounded-xl border px-4 py-3 flex items-start gap-3 ${
-        deployMode === 'always-on-ecs'
-          ? 'bg-primary/5 border-primary/20'
-          : 'bg-surface-dim border-dark-border/40'
-      }`}>
-        {deployMode === 'always-on-ecs' ? (
-          <Zap size={16} className="text-primary mt-0.5 flex-shrink-0" />
-        ) : (
-          <Radio size={16} className="text-text-muted mt-0.5 flex-shrink-0" />
-        )}
-        <div className="flex-1">
-          <p className="text-sm font-medium text-text-primary">
-            {deployMode === 'always-on-ecs' ? '⚡ Always-on' : 'Serverless'}
-          </p>
-          <p className="text-xs text-text-muted mt-0.5">
-            {instructions.mode_note || (
-              deployMode === 'always-on-ecs'
-                ? 'Your agent runs 24/7. Open the Gateway Console below to manage your IM connections directly.'
-                : 'Your agent starts on demand. Connect via the company bot below.'
-            )}
-          </p>
-          {deployMode === 'always-on-ecs' && (
-            <GatewayConsoleButton />
-          )}
-        </div>
+      {/* Agent mode indicator — switching is in sidebar */}
+      <div className={`rounded-xl border px-3 py-2 flex items-center gap-2 text-xs ${effectiveMode === 'always-on' ? 'bg-success/5 border-success/20 text-success' : 'bg-surface-dim border-dark-border/40 text-text-muted'}`}>
+        {effectiveMode === 'always-on' ? <Zap size={14} /> : <Radio size={14} />}
+        <span>Configuring IM for: <strong>{effectiveMode === 'always-on' ? 'Always-On Agent' : 'Serverless Agent'}</strong></span>
+        {hasAlwaysOn && <span className="ml-auto text-[10px]">Switch agent in sidebar ←</span>}
       </div>
+
+      {/* Always-On Mode: show per-channel credential input cards */}
+      {effectiveMode === 'always-on' && (
+        <>
+          <div className="rounded-xl bg-success/5 border border-success/20 px-4 py-3 flex items-start gap-3">
+            <Zap size={16} className="text-success mt-0.5 flex-shrink-0" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-text-primary">Always-On Agent — Direct IM Connection</p>
+              <p className="text-xs text-text-muted mt-0.5">
+                Create a personal bot on each IM platform and enter the credentials below.
+                Your agent connects directly — no shared routing, instant response.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {CHANNELS.filter(ch => alwaysOnAllowed.length === 0 || alwaysOnAllowed.includes(ch.id)).map(ch => {
+              const isConn = aoConnected.includes(ch.id);
+              return (
+                <Card key={ch.id} className="transition-all cursor-pointer hover:border-success/40">
+                  <div className="flex items-start gap-3">
+                    <div className="flex-shrink-0 mt-0.5">{(() => { const Icon = IM_ICONS[ch.id]; return Icon ? <Icon size={28} /> : null; })()}</div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                        <h3 className="text-sm font-semibold text-text-primary">{ch.label}</h3>
+                        {isConn && <Badge color="success" dot>Connected</Badge>}
+                      </div>
+                      <p className="text-xs text-text-muted">
+                        {isConn ? 'Personal bot connected to your Always-On agent' : 'Create a bot and enter credentials to connect'}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="mt-3">
+                    {isConn ? (
+                      <div className="flex gap-2">
+                        <Button variant="ghost" size="sm" className="flex-1 text-xs" onClick={() => setSelectedAOChannel(ch)}>Reconfigure</Button>
+                        <Button variant="ghost" size="sm" className="text-text-muted hover:text-danger hover:border-danger/30"
+                          onClick={async () => { await api.del(`/portal/agent/channels/${ch.id}`); setAoConnected(prev => prev.filter(c => c !== ch.id)); }}>
+                          Disconnect
+                        </Button>
+                      </div>
+                    ) : (
+                      <Button variant="primary" size="sm" className="w-full" onClick={() => setSelectedAOChannel(ch)}>
+                        <Key size={13} /> Enter Credentials
+                      </Button>
+                    )}
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {/* Serverless Mode: show shared bot banner */}
+      {effectiveMode === 'serverless' && (
+        <div className="rounded-xl bg-surface-dim border border-dark-border/40 px-4 py-3 flex items-start gap-3">
+          <Radio size={16} className="text-text-muted mt-0.5 flex-shrink-0" />
+          <div className="flex-1">
+            <p className="text-sm font-medium text-text-primary">Serverless — Company Shared Bot</p>
+            <p className="text-xs text-text-muted mt-0.5">
+              {instructions.mode_note || 'Connect via the company-wide bot. Your messages are routed to your personal agent on demand.'}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Serverless: show channel pairing cards. Always-on: show status only */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

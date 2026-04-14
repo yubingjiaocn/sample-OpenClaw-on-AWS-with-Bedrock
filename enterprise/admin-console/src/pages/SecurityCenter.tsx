@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import {
   Shield, Cpu, Zap, Clock, Edit3, Save, X, Plus, ChevronRight,
   Package, Key, Network, Globe2, CheckCircle, AlertTriangle,
-  FileText, Wrench, RefreshCw, ExternalLink, Lock, Unlock,
+  FileText, Wrench, RefreshCw, ExternalLink, Lock, Unlock, Bot, Check,
 } from 'lucide-react';
 import { Card, Badge, Button, PageHeader, Tabs, Modal } from '../components/ui';
 import {
@@ -14,9 +14,10 @@ import {
   useModelConfig, useUpdateModelConfig, useUpdateFallbackModel,
   useSetPositionModel, useRemovePositionModel,
   usePositionRuntimeMap, useSetPositionRuntime, useDeletePositionRuntime,
-  useGuardrails, useServiceStatus, useFargateOverview,
+  useGuardrails, useServiceStatus, useFargateOverview, useEmployees, useEnableAlwaysOn,
 } from '../hooks/useApi';
 import { Select } from '../components/ui';
+import { api } from '../api/client';
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -90,7 +91,7 @@ function RuntimeEditModal({ rt, models, onClose, awsRegion = 'us-east-1' }: { rt
     ...iamRoles.filter(r => r.relevant).map(r => ({ label: `${r.name} ★`, value: r.arn })),
     ...iamRoles.filter(r => !r.relevant).map(r => ({ label: r.name, value: r.arn })),
   ];
-  const sgOptions = securityGroups.map(sg => ({ label: `${sg.name} (${sg.id}) — ${sg.description.slice(0,40)}`, value: sg.id }));
+  const sgOptions = securityGroups.map(sg => ({ label: `${sg.name} (${sg.id}) — ${(sg.description || '').slice(0,40)}`, value: sg.id }));
   const subnetOptions = subnets.map(s => ({ label: `${s.id} — ${s.az} ${s.cidr}`, value: s.id }));
 
   const toggleSg = (id: string) => setSecurityGroupIds(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
@@ -1215,76 +1216,323 @@ export default function SecurityCenter() {
 
 function FargateOverviewPanel() {
   const { data, isLoading } = useFargateOverview() as { data: any; isLoading: boolean };
+  const { data: runtimesData } = useSecurityRuntimes() as { data: any };
+  const { data: runtimeMap } = usePositionRuntimeMap() as { data: any };
+  const { data: employeesData = [] } = useEmployees();
+  const { data: positionsData = [] } = usePositions();
   const agents = data?.alwaysOnAgents || [];
+  const runtimes = runtimesData?.runtimes || [];
+  const [showCreate, setShowCreate] = useState(false);
+  const [createEmp, setCreateEmp] = useState('');
+  const [createRuntime, setCreateRuntime] = useState('');
+  const [editingRuntime, setEditingRuntime] = useState<any>(null);
+  const [showNewTemplate, setShowNewTemplate] = useState(false);
+  const createRuntime2 = useCreateRuntime();
+  const enableAO = useEnableAlwaysOn();
 
   const tierColors: Record<string, string> = {
     standard: 'info', restricted: 'warning', engineering: 'success', executive: 'primary',
   };
 
+  const unassignedEmps = employeesData.filter((e: any) => e.agentId && !agents.find((a: any) => a.employeeId === e.id));
+
+  const handleCreate = () => {
+    if (createEmp && createRuntime) {
+      enableAO.mutate({ empId: createEmp, enable: true, runtimeId: createRuntime } as any);
+      setShowCreate(false);
+      setCreateEmp('');
+      setCreateRuntime('');
+    }
+  };
+
+  const { data: mc } = useModelConfig() as { data: any };
+  const models = mc?.availableModels || [];
+  const findModelName = (id: string) => models.find((m: any) => m.modelId === id)?.modelName || id?.split('/').pop()?.split(':')[0] || '—';
+
   return (
     <div className="space-y-6">
-      <Card>
-        <div className="flex items-center justify-between mb-4">
+      {/* Info banner + create button */}
+      <div className="flex items-start justify-between">
+        <div className="rounded-xl bg-cyan/5 border border-cyan/20 px-4 py-3 flex items-start gap-3 flex-1 mr-4">
+          <Zap size={16} className="text-cyan mt-0.5 shrink-0" />
           <div>
-            <h3 className="text-lg font-semibold text-text-primary">Always-On Agents (Fargate)</h3>
-            <p className="text-sm text-text-muted mt-1">
-              Per-employee Fargate containers with dedicated Gateway, IM direct connection, and HEARTBEAT support
+            <p className="text-sm font-semibold text-text-primary">Each runtime can serve as a Fargate tier. Assign employees below to give them dedicated always-on containers.</p>
+            <p className="text-xs text-text-muted mt-0.5">
+              Fargate agents use the same Docker image and runtime config as Agent Runtimes, but run 24/7 with EFS persistence,
+              instant response, and HEARTBEAT support. ~$7-16/month per container.
             </p>
           </div>
-          <Badge color="primary">{agents.length} active</Badge>
         </div>
+        <div className="flex flex-col gap-2">
+          <Button variant="primary" onClick={() => setShowNewTemplate(true)}>
+            <Plus size={16} /> New Fargate Template
+          </Button>
+          <Button variant="default" onClick={() => setShowCreate(true)} disabled={runtimes.length === 0}>
+            <Plus size={16} /> Assign to Employee
+          </Button>
+        </div>
+      </div>
 
-        {isLoading ? (
-          <div className="flex justify-center py-8 text-text-muted">Loading...</div>
-        ) : agents.length === 0 ? (
+      {/* P1-C: Cost summary + Bulk operations */}
+      {agents.length > 0 && (
+        <div className="flex items-center justify-between rounded-xl bg-dark-card border border-dark-border px-4 py-3">
+          <div className="flex items-center gap-6">
+            <div>
+              <p className="text-[10px] text-text-muted uppercase">Running</p>
+              <p className="text-lg font-bold text-success">{agents.filter((a: any) => a.status === 'running').length}</p>
+            </div>
+            <div>
+              <p className="text-[10px] text-text-muted uppercase">Stopped</p>
+              <p className="text-lg font-bold text-text-muted">{agents.filter((a: any) => a.status !== 'running').length}</p>
+            </div>
+            <div>
+              <p className="text-[10px] text-text-muted uppercase">Est. Monthly Cost</p>
+              <p className="text-lg font-bold text-warning">
+                ~${agents.reduce((sum: number, a: any) => {
+                  if (a.status !== 'running') return sum;
+                  const isHighTier = a.tier === 'executive' || a.tier === 'engineering';
+                  return sum + (isHighTier ? 16.34 : 7.42);
+                }, 0).toFixed(2)}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="default" size="sm" onClick={async () => {
+              for (const a of agents.filter((ag: any) => ag.status === 'running')) {
+                await enableAO.mutateAsync({ empId: a.employeeId, enable: false } as any).catch(() => {});
+              }
+              window.location.reload();
+            }}>Stop All</Button>
+            <Button variant="default" size="sm" onClick={async () => {
+              for (const a of agents) {
+                await api.post(`/agents/${a.employeeId}/always-on/restart`, {}).catch(() => {});
+              }
+              window.location.reload();
+            }}><RefreshCw size={12} /> Restart All</Button>
+          </div>
+        </div>
+      )}
+
+      {/* Runtime Tier Cards — same style as Agent Runtimes */}
+      {isLoading ? (
+        <div className="flex justify-center py-8 text-text-muted">Loading...</div>
+      ) : runtimes.length === 0 ? (
+        <Card>
           <div className="rounded-lg bg-dark-bg p-6 text-center">
-            <p className="text-text-muted">No always-on agents configured</p>
-            <p className="text-xs text-text-muted mt-1">
-              Enable always-on in Agent Factory → employee detail → Enable Always-On
+            <Bot size={28} className="mx-auto mb-2 opacity-30" />
+            <p className="text-text-muted">No runtimes configured</p>
+            <p className="text-xs text-text-muted mt-1">Create runtimes in the Agent Runtimes tab first, then assign employees here.</p>
+          </div>
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          {runtimes.map((rt: any) => {
+            const isExec = rt.name?.toLowerCase().includes('exec');
+            const imageTag = rt.containerUri?.split('/').pop() || 'unknown';
+            const roleName = rt.roleArn?.split('/').pop() || '—';
+            const modelName = findModelName(rt.model);
+            const assignedAgents = agents.filter((a: any) => a.tier === rt.name || a.runtimeId === rt.id);
+            const assignedPositions = Object.entries((runtimeMap as any)?.map || {})
+              .filter(([_, rid]) => rid === rt.id)
+              .map(([posId]) => positionsData.find((p: any) => p.id === posId))
+              .filter(Boolean);
+
+            return (
+              <Card key={rt.id} className={isExec ? 'border-warning/30' : ''}>
+                {/* Header */}
+                <div className="flex items-start justify-between mb-4">
+                  <div className="flex items-center gap-3">
+                    <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${isExec ? 'bg-warning/10' : 'bg-cyan/10'}`}>
+                      <Zap size={20} className={isExec ? 'text-warning' : 'text-cyan'} />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-semibold text-text-primary">{rt.name}</h3>
+                      <p className="text-xs text-text-muted">v{rt.version || '1'} · {rt.id?.slice(-8)} · Fargate Tier</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge color={rt.status === 'READY' ? 'success' : 'warning'} dot>{rt.status || 'UNKNOWN'}</Badge>
+                    <Badge color="info">{assignedAgents.length} agent{assignedAgents.length !== 1 ? 's' : ''}</Badge>
+                    <Button size="sm" variant="primary" onClick={() => setEditingRuntime(rt)}>
+                      <Edit3 size={12} /> Configure
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Config rows — matching RuntimeCard style */}
+                <div className="space-y-2 mb-4">
+                  {[
+                    { label: 'Container Image', value: imageTag },
+                    { label: 'Default Model', value: modelName },
+                    { label: 'IAM Role', value: roleName,
+                      extra: <Badge color={isExec ? 'danger' : 'info'}>{isExec ? 'Full Access' : 'Scoped'}</Badge> },
+                    { label: 'Storage', value: 'EFS', extra: <Badge color="success">Persistent</Badge> },
+                    { label: 'Guardrail (L5)',
+                      value: rt.guardrailId ? `${rt.guardrailId} v${rt.guardrailVersion || '1'}` : '—',
+                      extra: rt.guardrailId
+                        ? <Badge color="warning"><Shield size={10} className="mr-0.5" />Active</Badge>
+                        : <Badge color="default">None</Badge> },
+                  ].map(row => (
+                    <div key={row.label} className="flex items-center justify-between rounded-xl bg-surface-dim px-3 py-2">
+                      <span className="text-xs text-text-muted">{row.label}</span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-mono text-text-secondary">{row.value}</span>
+                        {(row as any).extra}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Lifecycle stats */}
+                <div className="border-t border-dark-border/30 pt-3 grid grid-cols-2 gap-2 mb-4">
+                  <div className="rounded-xl bg-surface-dim px-3 py-2.5">
+                    <p className="text-[10px] text-text-muted">Mode</p>
+                    <p className="text-base font-bold text-text-primary">24/7</p>
+                    <p className="text-[10px] text-text-muted">Always running</p>
+                  </div>
+                  <div className="rounded-xl bg-surface-dim px-3 py-2.5">
+                    <p className="text-[10px] text-text-muted">Est. cost</p>
+                    <p className="text-base font-bold text-text-primary">~${isExec ? '16' : '7'}/mo</p>
+                    <p className="text-[10px] text-text-muted">Per container</p>
+                  </div>
+                </div>
+
+                {/* Assigned Positions */}
+                {assignedPositions.length > 0 && (
+                  <div className="mb-3">
+                    <p className="text-[10px] font-medium text-text-muted uppercase tracking-wider mb-1.5">Mapped Positions ({assignedPositions.length})</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {assignedPositions.map((p: any) => <Badge key={p.id} color="primary">{p.name}</Badge>)}
+                    </div>
+                  </div>
+                )}
+
+                {/* Assigned Employees */}
+                <div className="border-t border-dark-border/30 pt-3">
+                  <p className="text-[10px] font-medium text-text-muted uppercase tracking-wider mb-1.5">
+                    Assigned Employees ({assignedAgents.length})
+                  </p>
+                  {assignedAgents.length === 0 ? (
+                    <p className="text-xs text-text-muted py-2">No employees assigned to this tier yet.</p>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {assignedAgents.map((a: any) => (
+                        <div key={a.employeeId} className="flex items-center justify-between rounded-lg bg-dark-bg/50 px-3 py-2">
+                          <div className="flex items-center gap-2">
+                            <div className={`w-2 h-2 rounded-full ${a.status === 'running' ? 'bg-success animate-pulse' : 'bg-warning'}`} />
+                            <div>
+                              <span className="text-xs font-medium text-text-primary">{a.employeeName}</span>
+                              <span className="text-xs text-text-muted ml-1.5">{a.positionName}</span>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {(a.imChannels || []).map((ch: string) => <Badge key={ch} color="info">{ch}</Badge>)}
+                            <Badge color={a.status === 'running' ? 'success' : 'danger'}>{a.status}</Badge>
+                            <Button variant="ghost" size="sm" className="text-danger"
+                              onClick={() => enableAO.mutate({ empId: a.employeeId, enable: false })}>
+                              Stop
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Create/Assign Modal */}
+      {showCreate && (
+        <Modal open={true} onClose={() => setShowCreate(false)} title="Assign Always-On Agent"
+          footer={
+            <div className="flex justify-end gap-3">
+              <Button variant="default" onClick={() => setShowCreate(false)}>Cancel</Button>
+              <Button variant="primary" onClick={handleCreate} disabled={!createEmp || !createRuntime}>
+                Create & Start
+              </Button>
+            </div>
+          }>
+          <div className="space-y-4">
+            <p className="text-xs text-text-muted">
+              This will create a dedicated Fargate container for the selected employee using the chosen runtime template.
+              The container starts immediately and runs 24/7 (~$7-16/month).
             </p>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-dark-border">
-                  <th className="text-left py-2 px-3 text-xs text-text-muted font-medium">Employee</th>
-                  <th className="text-left py-2 px-3 text-xs text-text-muted font-medium">Position</th>
-                  <th className="text-left py-2 px-3 text-xs text-text-muted font-medium">Tier</th>
-                  <th className="text-left py-2 px-3 text-xs text-text-muted font-medium">Status</th>
-                  <th className="text-left py-2 px-3 text-xs text-text-muted font-medium">IM Channels</th>
-                  <th className="text-left py-2 px-3 text-xs text-text-muted font-medium">Service</th>
-                </tr>
-              </thead>
-              <tbody>
-                {agents.map((a: any) => (
-                  <tr key={a.employeeId} className="border-b border-dark-border/50 hover:bg-dark-hover">
-                    <td className="py-2 px-3 font-medium">{a.employeeName}</td>
-                    <td className="py-2 px-3 text-text-secondary">{a.positionName}</td>
-                    <td className="py-2 px-3">
-                      <Badge color={(tierColors[a.tier] || 'default') as any}>{a.tier}</Badge>
-                    </td>
-                    <td className="py-2 px-3">
-                      <Badge color={a.status === 'starting' || a.status === 'running' ? 'success' : 'danger'}>
-                        {a.status}
-                      </Badge>
-                    </td>
-                    <td className="py-2 px-3">
-                      {(a.imChannels || []).length === 0
-                        ? <span className="text-text-muted">—</span>
-                        : (a.imChannels || []).map((ch: string) => (
-                            <Badge key={ch} color="info">{ch}</Badge>
-                          ))
-                      }
-                    </td>
-                    <td className="py-2 px-3 font-mono text-xs text-text-muted">{a.serviceName}</td>
-                  </tr>
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-text-secondary">Employee</label>
+              <select value={createEmp} onChange={e => setCreateEmp(e.target.value)}
+                className="w-full rounded-xl border border-dark-border/60 bg-surface-dim px-4 py-2.5 text-sm text-text-primary focus:border-primary/60 focus:outline-none">
+                <option value="">Select employee...</option>
+                {unassignedEmps.map((e: any) => (
+                  <option key={e.id} value={e.id}>{e.name} — {e.positionName}</option>
                 ))}
-              </tbody>
-            </table>
+              </select>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-text-secondary">Runtime Template</label>
+              <div className="grid grid-cols-2 gap-2">
+                {runtimes.map((rt: any) => {
+                  const sel = createRuntime === rt.id;
+                  return (
+                    <button key={rt.id} onClick={() => setCreateRuntime(rt.id)}
+                      className={`rounded-lg border p-2.5 text-left transition-all ${sel ? 'border-primary ring-2 ring-primary/30 bg-primary/5' : 'border-dark-border/40 hover:border-dark-border'}`}>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold">{rt.name}</span>
+                        {sel ? (
+                          <div className="flex h-4 w-4 items-center justify-center rounded-full bg-primary"><Check size={10} className="text-white" /></div>
+                        ) : (
+                          <div className="h-4 w-4 rounded-full border border-dark-border" />
+                        )}
+                      </div>
+                      <p className="text-[10px] text-text-muted mt-1">{rt.model || 'Default model'}</p>
+                      <p className="text-[10px] text-text-muted">
+                        {rt.guardrailId ? 'Guardrail' : 'No guardrail'} · v{rt.version || '1'}
+                      </p>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            {createEmp && createRuntime && (
+              <div className="rounded-xl bg-info/5 border border-info/20 p-3 text-xs text-info">
+                Will create a Fargate container for <strong>{unassignedEmps.find((e: any) => e.id === createEmp)?.name}</strong> using
+                runtime <strong>{runtimes.find((r: any) => r.id === createRuntime)?.name}</strong>.
+              </div>
+            )}
           </div>
-        )}
-      </Card>
+        </Modal>
+      )}
+
+      {/* Edit Runtime Modal — reuses RuntimeEditModal */}
+      {editingRuntime && (
+        <RuntimeEditModal rt={editingRuntime} models={models} onClose={() => setEditingRuntime(null)} />
+      )}
+
+      {/* New Fargate Template — creates a new runtime via same API */}
+      {showNewTemplate && (
+        <Modal open={true} onClose={() => setShowNewTemplate(false)} title="Create Fargate Template"
+          footer={
+            <div className="flex justify-end gap-3">
+              <Button variant="default" onClick={() => setShowNewTemplate(false)}>Cancel</Button>
+              <Button variant="primary" onClick={() => {
+                createRuntime2.mutate({} as any);
+                setShowNewTemplate(false);
+              }}>Create Template</Button>
+            </div>
+          }>
+          <div className="space-y-3">
+            <p className="text-xs text-text-muted">
+              This creates a new runtime template for Fargate agents. After creation, use "Configure" to set the model,
+              IAM role, security group, and guardrail. Then assign employees to start Fargate containers.
+            </p>
+            <div className="rounded-xl bg-info/5 border border-info/20 p-3 text-xs text-info">
+              Tip: Runtimes are shared between Agent Runtimes and Fargate tabs — any runtime can serve as a Fargate tier.
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

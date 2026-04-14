@@ -16,6 +16,10 @@ const eventTypeOptions = [
   { label: 'Approval Decision', value: 'approval_decision' },
   { label: 'Session Start', value: 'session_start' },
   { label: 'Session End', value: 'session_end' },
+  { label: 'Always-On Enabled', value: 'always_on_enabled' },
+  { label: 'Always-On Disabled', value: 'always_on_disabled' },
+  { label: 'IM Channel Connected', value: 'im_channel_connected' },
+  { label: 'IM Channel Disconnected', value: 'im_channel_disconnected' },
 ];
 
 const badgeColor = (type: string): 'success' | 'danger' | 'warning' | 'info' | 'default' => {
@@ -25,6 +29,10 @@ const badgeColor = (type: string): 'success' | 'danger' | 'warning' | 'info' | '
     case 'config_change': return 'warning';
     case 'approval_decision': return 'info';
     case 'tool_execution': return 'success';
+    case 'always_on_enabled': return 'info';
+    case 'always_on_disabled': return 'warning';
+    case 'im_channel_connected': return 'success';
+    case 'im_channel_disconnected': return 'danger';
     default: return 'default';
   }
 };

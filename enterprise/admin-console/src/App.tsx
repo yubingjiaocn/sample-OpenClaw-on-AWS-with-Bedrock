@@ -82,7 +82,6 @@ function AppRoutes() {
       <Route path="/portal/requests" element={user ? <PortalLayout><PortalMyRequests /></PortalLayout> : <Navigate to="/login" replace />} />
       <Route path="/portal/channels" element={user ? <PortalLayout><PortalBindIM /></PortalLayout> : <Navigate to="/login" replace />} />
       <Route path="/portal/agents" element={user ? <PortalLayout><PortalMyAgents /></PortalLayout> : <Navigate to="/login" replace />} />
-      <Route path="/portal/chat" element={user ? <PortalLayout><PortalChat /></PortalLayout> : <Navigate to="/login" replace />} />
 
       {/* Admin/Manager Console */}
       <Route path="/" element={user ? <Navigate to={user.role === 'employee' ? '/portal' : '/dashboard'} replace /> : <Navigate to="/login" replace />} />

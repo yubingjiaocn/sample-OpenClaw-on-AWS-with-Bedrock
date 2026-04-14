@@ -38,16 +38,11 @@ const donutOptsBase: Omit<ApexOptions, 'labels' | 'plotOptions'> = {
   tooltip: { theme: 'dark' },
 };
 
-const barChartOpts: ApexOptions = {
+const barChartOptsBase: Omit<ApexOptions, 'xaxis'> = {
   chart: { type: 'bar', toolbar: { show: false }, background: 'transparent' },
   colors: ['#6366f1'],
   plotOptions: { bar: { borderRadius: 4, columnWidth: '50%' } },
   grid: { borderColor: '#2e3039', strokeDashArray: 4 },
-  xaxis: {
-    categories: ['Telegram', 'WhatsApp', 'Slack', 'Discord', 'Feishu', 'DingTalk'],
-    labels: { style: { colors: '#64748b', fontSize: '12px' } },
-    axisBorder: { show: false }, axisTicks: { show: false },
-  },
   yaxis: { labels: { style: { colors: '#64748b', fontSize: '12px' } } },
   tooltip: { theme: 'dark' },
   dataLabels: { enabled: false },
@@ -74,13 +69,14 @@ export default function Dashboard() {
   const pendingApprovals = approvalsData?.pending?.length || 0;
   const activeAlerts = alertRules.filter(a => a.status === 'warning').length;
   const topDepts = DEPARTMENTS.filter(d => !d.parentId);
-  const qualityAgents = AGENTS.filter(a => a.qualityScore);
+  const qualityAgents = AGENTS.filter(a => a.qualityScore != null && a.qualityScore > 0);
   const avgQuality = qualityAgents.length > 0
     ? qualityAgents.reduce((s, a) => s + (a.qualityScore || 0), 0) / qualityAgents.length
     : null;
   const channelCounts: Record<string, number> = {};
   BINDINGS.forEach(b => { channelCounts[b.channel] = (channelCounts[b.channel] || 0) + 1; });
-  const channelSeries = ['telegram', 'whatsapp', 'slack', 'discord', 'feishu', 'dingtalk'].map(c => channelCounts[c] || 0);
+  const activeChannels = Object.keys(channelCounts).sort();
+  const channelSeries = activeChannels.map(c => channelCounts[c] || 0);
   const agentsByPosition = POSITIONS.map(p => AGENTS.filter(a => a.positionId === p.id).length);
 
   // Setup checklist: first-time admin guidance
@@ -271,7 +267,7 @@ export default function Dashboard() {
                     <div>
                       <p className="text-sm font-medium text-text-primary">{a.name}</p>
                       <p className="text-xs text-text-muted">
-                        {a.channels.map(c => CHANNEL_LABELS[c as ChannelType]).join(', ')}
+                        {(a.channels || []).map(c => CHANNEL_LABELS[c as ChannelType]).join(', ') || 'No channels'}
                       </p>
                     </div>
                   </div>
@@ -293,7 +289,7 @@ export default function Dashboard() {
             <h3 className="text-lg font-semibold text-text-primary">Channel Distribution</h3>
             <p className="text-sm text-text-secondary">Bindings per messaging platform</p>
           </div>
-          <Chart options={barChartOpts} series={[{ name: 'Bindings', data: channelSeries }]} type="bar" height={260} />
+          <Chart options={{...barChartOptsBase, xaxis: { categories: activeChannels.map(c => CHANNEL_LABELS[c as ChannelType] || c), labels: { style: { colors: '#64748b', fontSize: '12px' } }, axisBorder: { show: false }, axisTicks: { show: false } }}} series={[{ name: 'Bindings', data: channelSeries }]} type="bar" height={260} />
         </Card>
 
         <Card>
@@ -322,7 +318,7 @@ export default function Dashboard() {
                 </div>
                 <div className="flex items-center justify-between rounded-lg bg-dark-bg/50 px-3 py-2">
                   <span className="text-sm text-text-secondary">Agent Coverage</span>
-                  <span className="text-sm font-medium text-success">{Math.round(EMPLOYEES.filter(e => e.agentId).length / EMPLOYEES.length * 100)}%</span>
+                  <span className="text-sm font-medium text-success">{EMPLOYEES.length > 0 ? Math.round(EMPLOYEES.filter(e => e.agentId).length / EMPLOYEES.length * 100) : 0}%</span>
                 </div>
                 <div className="flex items-center justify-between rounded-lg bg-dark-bg/50 px-3 py-2">
                   <span className="text-sm text-text-secondary">Active Channels</span>
