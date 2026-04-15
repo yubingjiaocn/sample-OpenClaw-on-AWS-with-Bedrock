@@ -99,8 +99,8 @@ MIRROR_IMAGES=(
   # Core — always needed for OpenClawInstance pods
   "ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION}|openclaw/openclaw:${OPENCLAW_VERSION}"
   "ghcr.io/astral-sh/uv:0.6-bookworm-slim|astral-sh/uv:0.6-bookworm-slim"
-  "busybox:1.37|library/busybox:1.37"
-  "nginx:1.27-alpine|library/nginx:1.27-alpine"
+  "busybox:1.37|busybox:1.37"
+  "nginx:1.27-alpine|nginx:1.27-alpine"
   "otel/opentelemetry-collector:0.120.0|otel/opentelemetry-collector:0.120.0"
   # Sidecars — needed when enabled in CRD spec
   "chromedp/headless-shell:stable|chromedp/headless-shell:stable"
@@ -129,7 +129,7 @@ MIRROR_IMAGES=(
   "quay.io/prometheus-operator/prometheus-config-reloader:v0.77.1|prometheus-operator/prometheus-config-reloader:v0.77.1"
   "registry.k8s.io/ingress-nginx/kube-webhook-certgen:v20221220-controller-v1.5.1-58-g787ea74b6|ingress-nginx/kube-webhook-certgen:v20221220-controller-v1.5.1-58-g787ea74b6"
   "registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.13.0|kube-state-metrics/kube-state-metrics:v2.13.0"
-  "quay.io/prometheus/node-exporter:1.8.2|prometheus/node-exporter:1.8.2"
+  "quay.io/prometheus/node-exporter:v1.8.2|prometheus/node-exporter:v1.8.2"
 )
 
 info "Mirroring ${#MIRROR_IMAGES[@]} container images to ECR..."
@@ -198,13 +198,15 @@ fi
 MIRROR_OCI_CHARTS=(
   # Required — OpenClaw Operator (always deployed)
   "oci://ghcr.io/openclaw-rocks/charts|openclaw-operator|${OPERATOR_VERSION}"
-  # Optional — uncomment if using these Terraform modules in China:
-  # "oci://ghcr.io/kata-containers/kata-deploy-charts|kata-deploy|3.27.0"
-  # "oci://ghcr.io/berriai/litellm-helm|litellm-helm|"
+  # Kata Containers (optional: enable_kata)
+  "oci://ghcr.io/kata-containers/kata-deploy-charts|kata-deploy|3.27.0"
+  # LiteLLM (optional: enable_litellm) — uncomment if needed:
+  # "oci://ghcr.io/berriai|litellm-helm|0.1.812"
 )
 
 # HTTPS-repo charts (monitoring, grafana) — uncomment if needed:
 MIRROR_HTTPS_CHARTS=(
+  "eks|https://aws.github.io/eks-charts|aws-load-balancer-controller"
   # "prometheus-community|https://prometheus-community.github.io/helm-charts|kube-prometheus-stack|65.1.0"
   # "grafana|https://grafana.github.io/helm-charts|grafana|"
 )
