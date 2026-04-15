@@ -29,9 +29,10 @@ set -euo pipefail
 #   --platform    Target platform (e.g. linux/arm64) for cross-arch pulls
 #
 # Prerequisites:
-#   - Docker running locally
+#   - Docker running locally (with buildx)
 #   - Helm >= 3.12 installed
 #   - AWS CLI configured (with --profile for China)
+#   - jq installed (for manifest platform inspection)
 #   - Internet access to ghcr.io, quay.io, Docker Hub, registry.k8s.io
 # =============================================================================
 
@@ -132,6 +133,68 @@ MIRROR_IMAGES=(
   "quay.io/prometheus/node-exporter:v1.8.2|prometheus/node-exporter:v1.8.2"
 )
 
+# ── Platform resolution ──────────────────────────────────────
+# When --platform is specified, inspect the image manifest to find the best
+# matching platform. Handles variant mismatches, e.g.:
+#   requested: linux/arm64  →  manifest has: linux/arm64/v8  →  use linux/arm64/v8
+#   requested: linux/arm64  →  manifest has: linux/amd64 only →  FAIL (no compatible arch)
+#
+# Usage: RESOLVED=$(resolve_platform "image:tag" "linux/arm64") || handle_error
+# Returns: the resolved platform string on stdout, exit 0 on match, exit 1 on no match
+resolve_platform() {
+  local src="$1" requested="$2"
+  [[ -z "$requested" ]] && return 0
+
+  local req_os req_arch req_variant
+  IFS='/' read -r req_os req_arch req_variant <<< "$requested"
+
+  # Inspect the manifest index
+  local manifest
+  manifest=$(docker buildx imagetools inspect --raw "$src" 2>/dev/null) || {
+    # Cannot inspect (auth, single-arch, etc.) — use requested as-is
+    echo "$requested"
+    return 0
+  }
+
+  # Extract available platforms as "os/arch" or "os/arch/variant"
+  local platforms
+  platforms=$(echo "$manifest" | jq -r '
+    if .manifests then
+      .manifests[] |
+      select(.platform.os != null and .platform.architecture != null) |
+      "\(.platform.os)/\(.platform.architecture)" +
+      (if .platform.variant and (.platform.variant | length) > 0
+       then "/\(.platform.variant)" else "" end)
+    elif .mediaType then
+      # Single-arch image (not a manifest list)
+      empty
+    else empty end
+  ' 2>/dev/null)
+
+  # If no platform list (single-arch image), use requested as-is
+  if [[ -z "$platforms" ]]; then
+    echo "$requested"
+    return 0
+  fi
+
+  # 1) Exact match
+  if echo "$platforms" | grep -qxF "$requested"; then
+    echo "$requested"
+    return 0
+  fi
+
+  # 2) Same os + arch, any variant (e.g. linux/arm64 matches linux/arm64/v8)
+  local match
+  match=$(echo "$platforms" | grep -E "^${req_os}/${req_arch}(/|$)" | head -1)
+  if [[ -n "$match" ]]; then
+    echo "$match"
+    return 0
+  fi
+
+  # 3) No compatible platform found
+  return 1
+}
+
 info "Mirroring ${#MIRROR_IMAGES[@]} container images to ECR..."
 echo ""
 
@@ -165,9 +228,19 @@ for entry in "${MIRROR_IMAGES[@]}"; do
     fi
   fi
 
-  # Pull (with optional platform override)
+  # Resolve platform (handles variant mismatches like arm64 vs arm64/v8)
   PULL_ARGS=""
-  [[ -n "$PLATFORM" ]] && PULL_ARGS="--platform $PLATFORM"
+  if [[ -n "$PLATFORM" ]]; then
+    RESOLVED=$(resolve_platform "$SRC" "$PLATFORM") || {
+      echo -e "${YELLOW}SKIP${NC} (no ${PLATFORM}-compatible manifest)"
+      MIRROR_FAIL=$((MIRROR_FAIL + 1))
+      continue
+    }
+    if [[ "$RESOLVED" != "$PLATFORM" ]]; then
+      printf "${CYAN}[%s]${NC} " "$RESOLVED"
+    fi
+    PULL_ARGS="--platform $RESOLVED"
+  fi
   if ! docker pull $PULL_ARGS "$SRC" > /dev/null 2>&1; then
     echo -e "${RED}PULL FAILED${NC}"
     MIRROR_FAIL=$((MIRROR_FAIL + 1))
