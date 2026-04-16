@@ -296,7 +296,23 @@ Resources:
               commands:
                 - cd /tmp/openclaw/eks/terraform
                 - terraform init -input=false
-                - terraform apply -auto-approve -input=false
+                - |
+                  # Retry terraform apply up to 3 times to absorb transient
+                  # errors (e.g. EKS API DNS propagation delay).
+                  MAX_RETRIES=3
+                  for i in $(seq 1 $MAX_RETRIES); do
+                    echo "=== terraform apply attempt $i/$MAX_RETRIES ==="
+                    if terraform apply -auto-approve -input=false; then
+                      echo "=== terraform apply succeeded on attempt $i ==="
+                      break
+                    fi
+                    if [ $i -eq $MAX_RETRIES ]; then
+                      echo "=== terraform apply failed after $MAX_RETRIES attempts ==="
+                      exit 1
+                    fi
+                    echo "=== Retrying in 30s... ==="
+                    sleep 30
+                  done
             post_build:
               commands:
                 - cd /tmp/openclaw/eks/terraform
