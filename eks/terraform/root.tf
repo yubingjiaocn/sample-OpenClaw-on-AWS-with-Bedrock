@@ -66,6 +66,8 @@ module "storage" {
   partition       = local.partition
 
   tags = local.tags
+
+  depends_on = [module.eks_cluster]
 }
 
 # =============================================================================
@@ -85,6 +87,8 @@ module "bedrock_iam" {
   partition       = local.partition
 
   tags = local.tags
+
+  depends_on = [module.eks_cluster]
 }
 
 # =============================================================================
