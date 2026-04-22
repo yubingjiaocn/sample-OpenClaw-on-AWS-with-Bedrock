@@ -116,7 +116,26 @@ module "admin_console" {
 }
 
 # =============================================================================
-# Optional: Kata Containers + Karpenter
+# Optional: Karpenter (node autoscaling)
+# =============================================================================
+
+module "karpenter" {
+  count  = var.enable_karpenter ? 1 : 0
+  source = "./modules/karpenter"
+
+  cluster_name      = module.eks_cluster.cluster_name
+  cluster_endpoint  = module.eks_cluster.cluster_endpoint
+  karpenter_version = var.karpenter_version
+  architecture      = var.architecture
+  partition         = local.partition
+
+  tags = local.tags
+
+  depends_on = [module.eks_cluster]
+}
+
+# =============================================================================
+# Optional: Kata Containers (hardware-isolated pods)
 # =============================================================================
 
 module "kata" {
@@ -130,16 +149,16 @@ module "kata" {
   kata_hypervisor     = var.kata_hypervisor
   kata_instance_types = local.kata_instance_types
   architecture        = var.architecture
-  enable_karpenter    = var.enable_karpenter
-  node_iam_role_name  = module.eks_cluster.node_iam_role_name
   vpc_cidr            = var.vpc_cidr
+
+  karpenter_node_iam_role_name = try(module.karpenter[0].karpenter_node_iam_role_name, "")
 
   is_china_region = local.is_china_region
   partition       = local.partition
 
   tags = local.tags
 
-  depends_on = [module.eks_cluster]
+  depends_on = [module.karpenter]
 }
 
 # =============================================================================

@@ -26,9 +26,9 @@ data "aws_caller_identity" "current" {}
 # (especially cross-border to China).
 # -----------------------------------------------------------------------------
 locals {
-  dns_suffix = var.is_china_region ? "amazonaws.com.cn" : "amazonaws.com"
+  dns_suffix      = var.is_china_region ? "amazonaws.com.cn" : "amazonaws.com"
   default_ecr_uri = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.region}.${local.dns_suffix}/${local.ecr_repo_name}"
-  ecr_uri = var.image_repository != "" ? var.image_repository : local.default_ecr_uri
+  ecr_uri         = var.image_repository != "" ? var.image_repository : local.default_ecr_uri
 }
 
 # -----------------------------------------------------------------------------

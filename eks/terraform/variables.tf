@@ -84,9 +84,15 @@ variable "kata_instance_types" {
 }
 
 variable "enable_karpenter" {
-  description = "Enable Karpenter for bare-metal node autoscaling (only with Kata)"
+  description = "Enable Karpenter for node autoscaling"
   type        = bool
   default     = false
+}
+
+variable "karpenter_version" {
+  description = "Version of the Karpenter Helm chart to deploy"
+  type        = string
+  default     = "1.7.4"
 }
 
 # --- Networking ---

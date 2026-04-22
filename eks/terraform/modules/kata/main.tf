@@ -1,5 +1,5 @@
 ################################################################################
-# Kata Containers + Karpenter Bare-Metal Autoscaling
+# Kata Containers + Bare-Metal Karpenter NodePool
 ################################################################################
 
 # --- Kata Namespace -----------------------------------------------------------
@@ -89,58 +89,12 @@ resource "kubectl_manifest" "kata_runtime_class" {
   depends_on = [helm_release.kata_deploy]
 }
 
-# --- Karpenter Controller (conditional) --------------------------------------
-
-module "karpenter" {
-  count   = var.enable_karpenter ? 1 : 0
-  source  = "terraform-aws-modules/eks/aws//modules/karpenter"
-  version = "~> 20.24"
-
-  cluster_name = var.cluster_name
-
-  enable_v1_permissions           = true
-  enable_pod_identity             = true
-  create_pod_identity_association = true
-
-  node_iam_role_additional_policies = {
-    AmazonSSMManagedInstanceCore = "arn:${var.partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
-  }
-
-  tags = var.tags
-}
-
-resource "helm_release" "karpenter" {
-  count      = var.enable_karpenter ? 1 : 0
-  name       = "karpenter"
-  repository = "oci://public.ecr.aws/karpenter"
-  chart      = "karpenter"
-  version    = var.karpenter_version
-  namespace  = "kube-system"
-  wait       = false
-
-  values = [yamlencode({
-    settings = {
-      clusterName       = var.cluster_name
-      clusterEndpoint   = var.cluster_endpoint
-      interruptionQueue = try(module.karpenter[0].queue_name, "")
-    }
-    serviceAccount = {
-      annotations = {
-        "eks.amazonaws.com/role-arn" = try(module.karpenter[0].iam_role_arn, "")
-      }
-    }
-  })]
-
-  depends_on = [module.karpenter]
-}
-
 # --- Karpenter EC2NodeClass for Kata Bare-Metal Nodes -------------------------
 # Includes userData to configure devmapper snapshotter and containerd for
 # Kata Firecracker. Without this, kata-fc pods fail with
 # "snapshotter devmapper was not found".
 
 resource "kubectl_manifest" "kata_node_class" {
-  count     = var.enable_karpenter ? 1 : 0
   yaml_body = <<-YAML
     apiVersion: karpenter.k8s.aws/v1
     kind: EC2NodeClass
@@ -149,7 +103,7 @@ resource "kubectl_manifest" "kata_node_class" {
     spec:
       amiSelectorTerms:
         - alias: al2023@latest
-      role: ${try(module.karpenter[0].node_iam_role_name, "")}
+      role: ${var.karpenter_node_iam_role_name}
       subnetSelectorTerms:
         - tags:
             karpenter.sh/discovery: ${var.cluster_name}
@@ -274,14 +228,11 @@ resource "kubectl_manifest" "kata_node_class" {
         Name: kata-bare-metal-node
         KarpenterNodeClass: kata-bare-metal
   YAML
-
-  depends_on = [helm_release.karpenter]
 }
 
 # --- Karpenter NodePool for Kata Bare-Metal Nodes ----------------------------
 
 resource "kubectl_manifest" "kata_node_pool" {
-  count = var.enable_karpenter ? 1 : 0
   yaml_body = yamlencode({
     apiVersion = "karpenter.sh/v1"
     kind       = "NodePool"

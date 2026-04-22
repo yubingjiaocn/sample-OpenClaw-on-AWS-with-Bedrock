@@ -58,25 +58,14 @@ variable "architecture" {
   }
 }
 
-# --- Karpenter ----------------------------------------------------------------
+# --- Karpenter (passed from karpenter module) ---------------------------------
 
-variable "enable_karpenter" {
-  description = "Whether to deploy Karpenter for bare-metal node autoscaling"
-  type        = bool
-}
-
-variable "karpenter_version" {
-  description = "Version of the Karpenter Helm chart to deploy"
+variable "karpenter_node_iam_role_name" {
+  description = "Name of the IAM role for Karpenter-managed nodes (from karpenter module)"
   type        = string
-  default     = "1.7.4"
 }
 
 # --- IAM / Networking ---------------------------------------------------------
-
-variable "node_iam_role_name" {
-  description = "Name of the IAM role attached to Karpenter-managed nodes"
-  type        = string
-}
 
 variable "vpc_cidr" {
   description = "CIDR block of the VPC (used in node bootstrap configuration)"
