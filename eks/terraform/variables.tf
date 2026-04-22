@@ -86,7 +86,7 @@ variable "kata_instance_types" {
 variable "enable_karpenter" {
   description = "Enable Karpenter for node autoscaling"
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "karpenter_version" {
