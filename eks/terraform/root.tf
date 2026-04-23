@@ -28,7 +28,22 @@ module "eks_cluster" {
   core_instance_types = local.core_instance_types
   core_node_count     = var.core_node_count
 
-  access_entries = var.access_entries
+  # Explicitly add the Terraform caller (e.g. CodeBuild role) as cluster admin.
+  # enable_cluster_creator_admin_permissions=false, so we must do this manually.
+  access_entries = merge(var.access_entries, {
+    terraform_caller = {
+      principal_arn = data.aws_iam_session_context.current.issuer_arn
+      type          = "STANDARD"
+      policy_associations = {
+        admin = {
+          policy_arn = "arn:${local.partition}:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+          access_scope = {
+            type = "cluster"
+          }
+        }
+      }
+    }
+  })
 
   is_china_region = local.is_china_region
   partition       = local.partition
