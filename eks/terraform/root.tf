@@ -28,8 +28,7 @@ module "eks_cluster" {
   core_instance_types = local.core_instance_types
   core_node_count     = var.core_node_count
 
-  access_entries      = var.access_entries
-  kms_key_admin_roles = var.kms_key_admin_roles
+  access_entries = var.access_entries
 
   is_china_region = local.is_china_region
   partition       = local.partition
