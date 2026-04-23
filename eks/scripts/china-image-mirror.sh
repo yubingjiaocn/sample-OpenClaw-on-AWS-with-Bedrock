@@ -49,7 +49,7 @@ FORCE=false
 PLATFORM=""
 
 # Operator version — keep in sync with eks/terraform/modules/operator/variables.tf
-OPERATOR_VERSION="0.26.2"
+OPERATOR_VERSION="0.28.1"
 # OpenClaw version — pin to a known stable release (latest may have regressions)
 # Override via env: OPENCLAW_VERSION=2026.4.5 bash china-image-mirror.sh ...
 OPENCLAW_VERSION="${OPENCLAW_VERSION:-2026.4.14}"

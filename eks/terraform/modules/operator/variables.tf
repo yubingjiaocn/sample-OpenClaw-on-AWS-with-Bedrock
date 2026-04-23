@@ -16,7 +16,7 @@ variable "operator_namespace" {
 variable "operator_version" {
   description = "Version of the OpenClaw Operator Helm chart to deploy"
   type        = string
-  default     = "0.26.2"
+  default     = "0.28.1"
 }
 
 variable "chart_repository" {
