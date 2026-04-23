@@ -12,7 +12,7 @@ output "kata_runtime_class_name" {
   value       = "kata-${var.kata_hypervisor}"
 }
 
-output "karpenter_node_pool_name" {
-  description = "Name of the Karpenter NodePool for bare-metal Kata nodes (null when Karpenter is disabled)"
-  value       = var.enable_karpenter ? "kata-bare-metal" : null
+output "kata_node_pool_name" {
+  description = "Name of the Karpenter NodePool for bare-metal Kata nodes"
+  value       = "kata-bare-metal"
 }

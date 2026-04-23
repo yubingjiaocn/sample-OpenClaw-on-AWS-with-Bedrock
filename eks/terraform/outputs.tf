@@ -33,3 +33,4 @@ output "bedrock_role_arn" {
   value       = module.bedrock_iam.bedrock_role_arn
 }
 
+
