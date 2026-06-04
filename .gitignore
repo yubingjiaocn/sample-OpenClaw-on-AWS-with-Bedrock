@@ -23,7 +23,10 @@ eks/terraform/*.tfstate
 eks/terraform/*.tfstate.*
 eks/terraform/*.tfvars
 !eks/terraform/*.tfvars.example
-eks/terraform/.terraform.lock.hcl
+# .terraform.lock.hcl is intentionally committed: it pins provider versions so
+# CodeBuild/event provisioning resolves the exact same providers every run
+# (open-ended constraints previously let alekc/kubectl drift and break apply).
+# eks/terraform/.terraform.lock.hcl
 
 # Demo
 enterprise/demo/dist/

@@ -5,14 +5,29 @@ provider "aws" {
 provider "kubernetes" {
   host                   = module.eks_cluster.cluster_endpoint
   cluster_ca_certificate = base64decode(module.eks_cluster.cluster_ca_data)
-  token                  = data.aws_eks_cluster_auth.this.token
+
+  # Use exec-based auth (aws eks get-token) instead of the
+  # data.aws_eks_cluster_auth token. The data-source token is resolved at
+  # plan time, which forces provider config to evaluate before the cluster
+  # exists; exec defers credential resolution to apply time and avoids
+  # "no configuration has been provided" errors on first apply.
+  exec {
+    api_version = "client.authentication.k8s.io/v1beta1"
+    command     = "aws"
+    args        = ["eks", "get-token", "--cluster-name", module.eks_cluster.cluster_name, "--region", local.region]
+  }
 }
 
 provider "helm" {
   kubernetes {
     host                   = module.eks_cluster.cluster_endpoint
     cluster_ca_certificate = base64decode(module.eks_cluster.cluster_ca_data)
-    token                  = data.aws_eks_cluster_auth.this.token
+
+    exec {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      args        = ["eks", "get-token", "--cluster-name", module.eks_cluster.cluster_name, "--region", local.region]
+    }
   }
 
   # ECR Public OCI registry — auth required in global regions, anonymous in China
@@ -46,15 +61,16 @@ provider "kubectl" {
   host                   = module.eks_cluster.cluster_endpoint
   cluster_ca_certificate = base64decode(module.eks_cluster.cluster_ca_data)
   load_config_file       = false
-  token                  = data.aws_eks_cluster_auth.this.token
+
+  exec {
+    api_version = "client.authentication.k8s.io/v1beta1"
+    command     = "aws"
+    args        = ["eks", "get-token", "--cluster-name", module.eks_cluster.cluster_name, "--region", local.region]
+  }
 }
 
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
-
-data "aws_eks_cluster_auth" "this" {
-  name = module.eks_cluster.cluster_name
-}
 
 data "aws_availability_zones" "available" {
   filter {

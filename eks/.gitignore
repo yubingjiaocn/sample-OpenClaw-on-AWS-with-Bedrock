@@ -1,6 +1,6 @@
 # Terraform
 terraform/.terraform/
-terraform/.terraform.lock.hcl
+# terraform/.terraform.lock.hcl is intentionally committed (pins provider versions)
 terraform/terraform.tfstate
 terraform/terraform.tfstate.backup
 terraform/*.tfplan
