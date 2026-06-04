@@ -111,7 +111,7 @@ MIRROR_IMAGES=(
   "rclone/rclone:1.68|rclone/rclone:1.68"
 
   # ── Operator controller ──
-  "ghcr.io/openclaw-rocks/openclaw-operator:v${OPERATOR_VERSION}|openclaw-rocks/openclaw-operator:v${OPERATOR_VERSION}"
+  "ghcr.io/paperclipinc/openclaw-operator:v${OPERATOR_VERSION}|paperclipinc/openclaw-operator:v${OPERATOR_VERSION}"
 
   # ── Kata Containers (optional: enable_kata) ──
   "quay.io/kata-containers/kata-deploy:3.27.0|kata-containers/kata-deploy:3.27.0"
@@ -285,7 +285,7 @@ fi
 
 MIRROR_OCI_CHARTS=(
   # Required — OpenClaw Operator (always deployed)
-  "oci://ghcr.io/openclaw-rocks/charts|openclaw-operator|${OPERATOR_VERSION}"
+  "oci://ghcr.io/paperclipinc/charts|openclaw-operator|${OPERATOR_VERSION}"
   # Kata Containers (optional: enable_kata)
   "oci://ghcr.io/kata-containers/kata-deploy-charts|kata-deploy|3.27.0"
   # LiteLLM (optional: enable_litellm)

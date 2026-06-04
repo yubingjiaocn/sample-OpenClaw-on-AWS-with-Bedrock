@@ -72,7 +72,7 @@ This mirrors all container images and Helm chart OCI artifacts to China ECR:
 | `ollama/ollama:latest` | Local LLM inference sidecar |
 | `tsl0922/ttyd:latest` | Web terminal sidecar |
 | `rclone/rclone:1.68` | S3 backup/restore job |
-| `ghcr.io/openclaw-rocks/openclaw-operator:v0.26.2` | Operator controller |
+| `ghcr.io/paperclipinc/openclaw-operator:v0.26.2` | Operator controller |
 
 ---
 
@@ -389,7 +389,7 @@ docker pull --platform $PLATFORM ghcr.io/astral-sh/uv:0.6-bookworm-slim
 docker pull --platform $PLATFORM busybox:1.37
 docker pull --platform $PLATFORM nginx:1.27-alpine
 docker pull --platform $PLATFORM otel/opentelemetry-collector:0.120.0
-docker pull --platform $PLATFORM ghcr.io/openclaw-rocks/openclaw-operator:v0.26.2
+docker pull --platform $PLATFORM ghcr.io/paperclipinc/openclaw-operator:v0.26.2
 
 # Optional sidecar images
 docker pull --platform $PLATFORM chromedp/headless-shell:stable
@@ -398,7 +398,7 @@ docker pull --platform $PLATFORM tsl0922/ttyd:latest
 docker pull --platform $PLATFORM ghcr.io/tailscale/tailscale:latest
 
 # Pull Helm chart OCI artifact
-helm pull oci://ghcr.io/openclaw-rocks/charts/openclaw-operator --version 0.26.2 --destination .
+helm pull oci://ghcr.io/paperclipinc/charts/openclaw-operator --version 0.26.2 --destination .
 
 # Save images
 docker save \
@@ -407,7 +407,7 @@ docker save \
   busybox:1.37 \
   nginx:1.27-alpine \
   otel/opentelemetry-collector:0.120.0 \
-  ghcr.io/openclaw-rocks/openclaw-operator:v0.26.2 \
+  ghcr.io/paperclipinc/openclaw-operator:v0.26.2 \
   | gzip > core-images.tar.gz
 
 docker save \
@@ -452,7 +452,7 @@ helm registry login "$ECR" --username AWS \
 
 # Create repos and push images
 for repo in openclaw/openclaw astral-sh/uv library/busybox library/nginx \
-            otel/opentelemetry-collector openclaw-rocks/openclaw-operator \
+            otel/opentelemetry-collector paperclipinc/openclaw-operator \
             chromedp/headless-shell rclone/rclone tsl0922/ttyd \
             tailscale/tailscale charts/openclaw-operator; do
   aws ecr create-repository --repository-name $repo --region $REGION 2>/dev/null || true
@@ -463,12 +463,12 @@ docker tag ghcr.io/astral-sh/uv:0.6-bookworm-slim $ECR/astral-sh/uv:0.6-bookworm
 docker tag busybox:1.37 $ECR/library/busybox:1.37
 docker tag nginx:1.27-alpine $ECR/library/nginx:1.27-alpine
 docker tag otel/opentelemetry-collector:0.120.0 $ECR/otel/opentelemetry-collector:0.120.0
-docker tag ghcr.io/openclaw-rocks/openclaw-operator:v0.26.2 $ECR/openclaw-rocks/openclaw-operator:v0.26.2
+docker tag ghcr.io/paperclipinc/openclaw-operator:v0.26.2 $ECR/paperclipinc/openclaw-operator:v0.26.2
 
 for img in openclaw/openclaw:2026.4.2 astral-sh/uv:0.6-bookworm-slim \
            library/busybox:1.37 library/nginx:1.27-alpine \
            otel/opentelemetry-collector:0.120.0 \
-           openclaw-rocks/openclaw-operator:v0.26.2; do
+           paperclipinc/openclaw-operator:v0.26.2; do
   docker push $ECR/$img
 done
 

@@ -37,7 +37,7 @@ AWS 中国区域（`cn-northwest-1`、`cn-north-1`）存在网络限制：
 
 | 依赖类型 | 来源地址 | 用途 | 阻断级别 | 解决方案 |
 |----------|---------|------|---------|---------|
-| **Helm Chart (OCI)** | `oci://ghcr.io/openclaw-rocks/charts` | OpenClaw Operator | 完全阻断 | `china-image-mirror.sh` 同步至 ECR，TF 自动使用 `chart_repository` |
+| **Helm Chart (OCI)** | `oci://ghcr.io/paperclipinc/charts` | OpenClaw Operator | 完全阻断 | `china-image-mirror.sh` 同步至 ECR，TF 自动使用 `chart_repository` |
 | **Helm Chart (OCI)** | `oci://ghcr.io/kata-containers/kata-deploy-charts` | Kata Containers（可选） | 完全阻断 | 同上 |
 | **Helm Chart (OCI)** | `oci://ghcr.io/berriai/litellm-helm` | LiteLLM 代理（可选） | 完全阻断 | 同上 |
 | **Helm Chart (HTTPS)** | `https://aws.github.io/eks-charts` | ALB Controller（可选） | 间歇性慢 | GitHub Pages 通常可达；超时则需 VPN |
@@ -58,7 +58,7 @@ AWS 中国区域（`cn-northwest-1`、`cn-north-1`）存在网络限制：
 
 | Helm Chart | Chart 来源 | 容器镜像（上游） | 镜像来源 | 中国可用 |
 |------------|-----------|---------|---------|---------|
-| **openclaw-operator** | `oci://ghcr.io/openclaw-rocks/charts` | `ghcr.io/openclaw-rocks/openclaw-operator:v0.26.2` | ghcr.io | 需同步 |
+| **openclaw-operator** | `oci://ghcr.io/paperclipinc/charts` | `ghcr.io/paperclipinc/openclaw-operator:v0.26.2` | ghcr.io | 需同步 |
 | **aws-load-balancer-controller** | `https://aws.github.io/eks-charts` | `public.ecr.aws/eks/aws-load-balancer-controller:v3.2.1` | ECR Public | 可直接拉取 |
 | **kube-prometheus-stack** | `https://prometheus-community.github.io/helm-charts` | `quay.io/prometheus/prometheus:v2.54.1` | quay.io | 需同步 |
 | | | `quay.io/prometheus-operator/prometheus-operator:v0.77.1` | quay.io | 需同步 |
@@ -118,13 +118,13 @@ bash eks/scripts/china-image-mirror.sh \
 | `ollama/ollama:latest` | 本地 LLM 推理 Sidecar | Docker Hub |
 | `tsl0922/ttyd:latest` | Web 终端 Sidecar | Docker Hub |
 | `rclone/rclone:1.68` | S3 备份/恢复 Job | Docker Hub |
-| `ghcr.io/openclaw-rocks/openclaw-operator:v0.26.2` | Operator 本身 | ghcr.io |
+| `ghcr.io/paperclipinc/openclaw-operator:v0.26.2` | Operator 本身 | ghcr.io |
 
 **Helm Chart OCI 制品（1-3 个）：**
 
 | Chart | 用途 | 来源 |
 |-------|------|------|
-| `oci://ghcr.io/openclaw-rocks/charts/openclaw-operator` | Operator 部署（必需） | ghcr.io |
+| `oci://ghcr.io/paperclipinc/charts/openclaw-operator` | Operator 部署（必需） | ghcr.io |
 | `oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy` | Kata Containers（可选） | ghcr.io |
 | `oci://ghcr.io/berriai/litellm-helm/litellm-helm` | LiteLLM 代理（可选） | ghcr.io |
 
@@ -512,7 +512,7 @@ docker pull --platform $PLATFORM ghcr.io/astral-sh/uv:0.6-bookworm-slim
 docker pull --platform $PLATFORM busybox:1.37
 docker pull --platform $PLATFORM nginx:1.27-alpine
 docker pull --platform $PLATFORM otel/opentelemetry-collector:0.120.0
-docker pull --platform $PLATFORM ghcr.io/openclaw-rocks/openclaw-operator:v0.26.2
+docker pull --platform $PLATFORM ghcr.io/paperclipinc/openclaw-operator:v0.26.2
 
 # 可选 sidecar 镜像
 docker pull --platform $PLATFORM chromedp/headless-shell:stable       # 浏览器沙箱
@@ -521,7 +521,7 @@ docker pull --platform $PLATFORM tsl0922/ttyd:latest                  # Web 终�
 docker pull --platform $PLATFORM ghcr.io/tailscale/tailscale:latest   # VPN
 
 # 拉取 Helm Chart OCI 制品（Terraform 部署需要）
-helm pull oci://ghcr.io/openclaw-rocks/charts/openclaw-operator --version 0.26.2 --destination .
+helm pull oci://ghcr.io/paperclipinc/charts/openclaw-operator --version 0.26.2 --destination .
 # 如使用 Kata/LiteLLM 模块，取消注释：
 # helm pull oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy --version 3.27.0 --destination .
 # helm pull oci://ghcr.io/berriai/litellm-helm/litellm-helm --destination .
@@ -533,7 +533,7 @@ docker save \
   busybox:1.37 \
   nginx:1.27-alpine \
   otel/opentelemetry-collector:0.120.0 \
-  ghcr.io/openclaw-rocks/openclaw-operator:v0.26.2 \
+  ghcr.io/paperclipinc/openclaw-operator:v0.26.2 \
   | gzip > core-images.tar.gz
 
 docker save \
@@ -589,7 +589,7 @@ helm registry login "$ECR" --username AWS \
 
 # 创建 ECR 仓库（幂等操作）
 for repo in openclaw/openclaw astral-sh/uv library/busybox library/nginx \
-            otel/opentelemetry-collector openclaw-rocks/openclaw-operator \
+            otel/opentelemetry-collector paperclipinc/openclaw-operator \
             chromedp/headless-shell rclone/rclone tsl0922/ttyd \
             tailscale/tailscale charts/openclaw-operator; do
   aws ecr create-repository --repository-name $repo --region $REGION 2>/dev/null || true
@@ -601,12 +601,12 @@ docker tag ghcr.io/astral-sh/uv:0.6-bookworm-slim $ECR/astral-sh/uv:0.6-bookworm
 docker tag busybox:1.37 $ECR/library/busybox:1.37
 docker tag nginx:1.27-alpine $ECR/library/nginx:1.27-alpine
 docker tag otel/opentelemetry-collector:0.120.0 $ECR/otel/opentelemetry-collector:0.120.0
-docker tag ghcr.io/openclaw-rocks/openclaw-operator:v0.26.2 $ECR/openclaw-rocks/openclaw-operator:v0.26.2
+docker tag ghcr.io/paperclipinc/openclaw-operator:v0.26.2 $ECR/paperclipinc/openclaw-operator:v0.26.2
 
 for img in openclaw/openclaw:2026.4.2 astral-sh/uv:0.6-bookworm-slim \
            library/busybox:1.37 library/nginx:1.27-alpine \
            otel/opentelemetry-collector:0.120.0 \
-           openclaw-rocks/openclaw-operator:v0.26.2; do
+           paperclipinc/openclaw-operator:v0.26.2; do
   docker push $ECR/$img
 done
 

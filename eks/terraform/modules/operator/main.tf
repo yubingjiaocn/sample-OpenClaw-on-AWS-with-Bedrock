@@ -19,7 +19,7 @@ resource "kubernetes_namespace_v1" "operator" {
 # -----------------------------------------------------------------------------
 resource "helm_release" "openclaw_operator" {
   name       = "openclaw-operator"
-  repository = var.chart_repository != "" ? var.chart_repository : "oci://ghcr.io/openclaw-rocks/charts"
+  repository = var.chart_repository != "" ? var.chart_repository : "oci://ghcr.io/paperclipinc/charts"
   chart      = "openclaw-operator"
   version    = var.operator_version
   namespace  = kubernetes_namespace_v1.operator.metadata[0].name
@@ -35,7 +35,7 @@ resource "helm_release" "openclaw_operator" {
   }
 
   set {
-    name = "image.pullPolicy"
+    name  = "image.pullPolicy"
     value = "Always"
   }
 
@@ -44,7 +44,7 @@ resource "helm_release" "openclaw_operator" {
     for_each = var.ecr_host != "" ? [1] : []
     content {
       name  = "image.repository"
-      value = "${var.ecr_host}/openclaw-rocks/openclaw-operator"
+      value = "${var.ecr_host}/paperclipinc/openclaw-operator"
     }
   }
 
